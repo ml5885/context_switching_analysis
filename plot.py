@@ -9,13 +9,41 @@ import matplotlib.pyplot as plt
 def load_result(path):
     with open(path) as f:
         data = json.load(f)
-    data["metric_by_len"] = {
-        int(k): v for k, v in data["metric_by_len"].items()
+    
+    # Handle both old and new JSON formats
+    if "experiment_metadata" in data:
+        # New format
+        metric_data = data["performance_metrics"]["data_by_history_length"]
+        cos_data = data["layer_analysis"]["cosine_similarities_by_history_length"]
+        metric_name = data["experiment_metadata"]["evaluation_metric"]
+        model = data["experiment_metadata"]["model_name"]
+        target = data["experiment_metadata"]["target_task"]
+        distractor = data["experiment_metadata"]["distractor_task"]
+    elif "performance_by_history_length" in data:
+        # Previous format
+        metric_data = data["performance_by_history_length"]["data"]
+        cos_data = data["cosine_similarity_by_history_length"]["data"]
+        metric_name = data["experiment_info"]["metric_used"]
+        model = data["experiment_info"]["model"]
+        target = data["experiment_info"]["target_task"]
+        distractor = data["experiment_info"]["distractor_task"]
+    else:
+        # Original format (for backward compatibility)
+        metric_data = data["metric_by_len"]
+        cos_data = data["cos_by_len"]
+        metric_name = data["metric_name"]
+        model = data["model"]
+        target = data["target"]
+        distractor = data["distractor"]
+    
+    return {
+        "metric_by_len": {int(k): v for k, v in metric_data.items()},
+        "cos_by_len": {int(k): [np.array(x) for x in v] for k, v in cos_data.items()},
+        "metric_name": metric_name,
+        "model": model,
+        "target": target,
+        "distractor": distractor
     }
-    data["cos_by_len"] = {
-        int(k): [np.array(x) for x in v] for k, v in data["cos_by_len"].items()
-    }
-    return data
 
 def plot_metric(data, out_dir):
     xs = sorted(data["metric_by_len"])

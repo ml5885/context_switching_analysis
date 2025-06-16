@@ -39,9 +39,14 @@ dataset_config = {
     },
 }
 
-def load_split(name, split="test", limit=None):
+def load_split(name, split="test", limit=None, shuffle=True, seed=42):
     cfg = dataset_config[name]
     ds = load_dataset(cfg["hf_name"], cfg["subset"], split=split)
+    
+    # Shuffle the dataset for randomness
+    if shuffle:
+        ds = ds.shuffle(seed=seed)
+    
     if limit:
         ds = ds.select(range(min(limit, len(ds))))
     return ds
