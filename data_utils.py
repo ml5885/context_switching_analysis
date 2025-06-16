@@ -5,21 +5,38 @@ dataset_config = {
     "mmlu": {
         "hf_name": "lukaemon/mmlu",
         "subset": "abstract_algebra",
-        "prompt_prefix": "You have a multiple choice question on Abstract Algebra. Only one of the options is correct: A, B, C, or D. Give your answer in the following format with the tags provided: <Answer> </Answer>. Please read the following question and options and answer the question.\n",
-        "metric": "accuracy"
+        "prompt_prefix": (
+            "You have a multiple choice question on Abstract Algebra. "
+            "Only one of the options is correct: A, B, C, or D. "
+            "Give your answer in the following format with the tags provided: "
+            "<Answer> </Answer>. Please read the following question and options and answer the question.\n"
+        ),
+        "metric": "accuracy",
+        "labels": ["A", "B", "C", "D"],
+        "answer_tokens": [" A", " B", " C", " D"],
     },
     "rotten_tomatoes": {
         "hf_name": "cornell-movie-review-data/rotten_tomatoes",
         "subset": None,
-        "prompt_prefix": "Classify the following movie review as Positive or Negative. Give your answer in the format <Answer> </Answer>.\nReview:",
-        "metric": "accuracy"
+        "prompt_prefix": (
+            "Classify the following movie review as Positive or Negative. "
+            "Give your answer in the format <Answer> </Answer>.\nReview:"
+        ),
+        "metric": "accuracy",
+        "labels": ["Negative", "Positive"],
+        "answer_tokens": [" Negative", " Positive"],
     },
     "cnn_dailymail": {
         "hf_name": "abisee/cnn_dailymail",
         "subset": "3.0.0",
-        "prompt_prefix": "Summarize the following article in 2-3 sentences. Provide the summary inside the tags <Answer> </Answer>.\n",
-        "metric": "rouge"
-    }
+        "prompt_prefix": (
+            "Summarize the following article in 2-3 sentences. "
+            "Provide the summary inside the tags <Answer> </Answer>.\n"
+        ),
+        "metric": "rouge",
+        "labels": [],
+        "answer_tokens": [],
+    },
 }
 
 def load_split(name, split="test", limit=None):

@@ -1,6 +1,9 @@
 torch
-transformer_lens 
-datasets 
-evaluate 
+transformer_lens
+datasets
+evaluate
 matplotlib
 scikit-learn
+rouge-score
+nltk
+absl-py
