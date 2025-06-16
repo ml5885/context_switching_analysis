@@ -88,15 +88,11 @@ def experiment(
     model = HookedTransformer.from_pretrained(model_name, device=device)
 
     # Ensure consistent shuffling with proper seeding for reproducible results
-    tgt_ds = load_split(target).shuffle(seed=42).select(range(n))
+    target_ds = load_split(target).shuffle(seed=42).select(range(n))
     dis_ds = load_split(distractor).shuffle(seed=42).select(range(n))
     histories = build_histories(max_len)
-
-    tgt_cfg = dataset_config[target]
-    metric_name = tgt_cfg["metric"]
-    is_accuracy_metric = metric_name == "accuracy"
-    is_rouge_metric = metric_name == "rouge"
-
+    metric_name = dataset_config[target]['metric']
+    
     metric_by_len, cos_by_len, predictions_debug = {}, {}, {}
 
     for seq in tqdm(histories, desc="histories"):
@@ -108,20 +104,20 @@ def experiment(
             turns = []
             for tag in seq:
                 p, a = (
-                    build_prompt(target, tgt_ds[i])
+                    build_prompt(target, target_ds[i])
                     if tag == "A"
                     else build_prompt(distractor, dis_ds[i])
                 )
                 turns.append(f"{p}{a}")
             history = "\n\n".join(turns)
 
-            final_p, gold = build_prompt(target, tgt_ds[i])
+            final_p, gold = build_prompt(target, target_ds[i])
             conv = (history + "\n\n" if history else "") + final_p
 
             cache, logits = run_example(model, conv)
 
-            if is_accuracy_metric:
-                pred = pick_answer(logits, tgt_cfg, model)
+            if metric_name == "accuracy":
+                pred = pick_answer(logits, dataset_config[target], model)
                 preds.append(pred)
                 refs.append(gold)
                 sequence_predictions.append({
@@ -132,19 +128,22 @@ def experiment(
                     "is_correct": pred == gold,
                     "prompt_snippet": final_p[:100] + "..." if len(final_p) > 100 else final_p
                 })
-            elif is_rouge_metric:
-                # For generative tasks, we need to generate text
-                generated = model.generate(
-                    conv, 
+            elif metric_name == "rouge":
+                prompt_tokens = model.to_tokens(conv, prepend_bos=True)
+                
+                generated_tokens = model.generate(
+                    prompt_tokens, 
                     max_new_tokens=100, 
-                    temperature=0.7,
+                    temperature=0.0,
                     do_sample=False,
                     stop_at_eos=True
                 )
-                full_text = model.to_string(generated[0])
-                # Extract just the generated part (after the prompt)
-                generated_answer = full_text[len(conv):].strip()
-                # Extract answer from tags if present
+                
+                full_text = model.to_string(generated_tokens[0])
+                
+                prompt_text = model.to_string(prompt_tokens[0])
+                generated_answer = full_text[len(prompt_text):].strip()
+                
                 extracted_answer = extract_answer_from_generation(generated_answer)
                 
                 preds.append(extracted_answer)
@@ -161,10 +160,10 @@ def experiment(
             sims.append(layer_cosines(cache, logits, model.W_U, model.cfg.n_layers))
 
         # Calculate metrics
-        if is_accuracy_metric:
+        if metric_name == "accuracy":
             acc = sum(p == r for p, r in zip(preds, refs)) / len(refs)
             metric_by_len.setdefault(str(h), []).append(acc)
-        elif is_rouge_metric:
+        elif metric_name == "rouge":
             rouge_scores = eval_rouge(preds, refs)
             # Use ROUGE-L F1 score as the main metric
             metric_by_len.setdefault(str(h), []).append(rouge_scores['rougeL'])
