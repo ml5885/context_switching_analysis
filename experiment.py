@@ -1,239 +1,217 @@
 import argparse
 import json
 import os
+import random
 from collections import Counter
 
+import evaluate
 import numpy as np
 import torch
 from tqdm import tqdm
 from transformer_lens import HookedTransformer
-import evaluate
 
-from data_utils import load_split, build_prompt, build_histories, dataset_config
+from data_utils import load_split, build_prompt, dataset_config
 
-def pick_device(pref: str | None) -> str:
-    if pref is None:
-        if torch.cuda.is_available():
-            return "cuda"
-        else:
-            return "cpu"
-    return pref
+def pick_device(pref):
+    return pref or ("cuda" if torch.cuda.is_available() else "cpu")
 
-def cosine(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
+def cosine(a, b):
     return torch.nn.functional.cosine_similarity(a, b, dim=-1)
 
-def layer_cosines(cache, final_logits, w_u, layers):
-    return [
-        cosine(cache["resid_post", l][:, -1, :] @ w_u, final_logits).mean().item()
-        for l in range(layers)
+@torch.no_grad()
+def run_example(model, text):
+    toks = model.to_tokens(text, prepend_bos=True)
+
+    final_logits = model(toks)[:, -1, :].detach()
+    w_u = model.W_U
+
+    layer_sims = torch.empty(model.cfg.n_layers, device="cpu")
+
+    def make_hook(idx):
+        def _hook(resid_post, hook):
+            last_tok = resid_post[:, -1, :]
+            sim = cosine(last_tok @ w_u, final_logits)
+            layer_sims[idx] = sim.item()
+        return _hook
+
+    hooks = [
+        (f"blocks.{i}.hook_resid_post", make_hook(i))
+        for i in range(model.cfg.n_layers)
     ]
 
-def run_example(model: HookedTransformer, text: str):
-    toks = model.to_tokens(text, prepend_bos=True)
-    logits, cache = model.run_with_cache(toks)
-    return cache, logits[:, -1, :]
+    model.run_with_hooks(toks, fwd_hooks=hooks, return_type=None)
 
-def eval_rouge(predictions, references):
-    """Evaluate using ROUGE metric"""
-    rouge = evaluate.load("rouge")
-    scores = rouge.compute(predictions=predictions, references=references)
-    
-    # Add mean character count as additional metric
-    mean_chars = np.mean([len(pred) for pred in predictions])
-    scores["mean_num_of_chars"] = mean_chars
-    
-    return scores
+    return final_logits.cpu(), layer_sims.tolist()
 
-def pick_answer(logits: torch.Tensor, cfg: dict, model: HookedTransformer) -> str:
+def build_histories(tasks, max_len):
+    out = []
+    for h in range(1, max_len + 1):
+        for t in tasks:
+            out.append([t] * h)
+    return out
+
+def pick_answer(logits, cfg, model):
     ids = [model.to_tokens(tok)[0, 0].item() for tok in cfg["answer_tokens"]]
     idx = torch.argmax(logits[:, ids], dim=-1).item()
     return cfg["labels"][idx]
 
-def extract_answer_from_generation(text: str) -> str:
-    """Extract answer from model generation for generative tasks"""
-    # Look for text between <Answer> tags
-    start_tag = "<Answer>"
-    end_tag = "</Answer>"
-    
-    start_idx = text.find(start_tag)
-    if start_idx == -1:
-        # Fallback: return everything after "Answer:" if no tags found
-        answer_idx = text.find("Answer:")
-        if answer_idx != -1:
-            return text[answer_idx + len("Answer:"):].strip()
-        return text.strip()
-    
-    start_idx += len(start_tag)
-    end_idx = text.find(end_tag, start_idx)
-    
-    if end_idx == -1:
-        return text[start_idx:].strip()
-    
-    return text[start_idx:end_idx].strip()
+def greedy_generate(model, prompt, max_new_tokens=32):
+    toks = model.to_tokens(prompt, prepend_bos=True)
+    for _ in range(max_new_tokens):
+        logits = model(toks)[:, -1, :]
+        next_id = torch.argmax(logits, dim=-1, keepdim=True)
+        toks = torch.cat([toks, next_id], dim=-1)
+        if next_id.item() == model.tokenizer.eos_token_id:
+            break
+    return model.to_string(toks[0])
 
-def experiment(
-    model_name: str,
-    target: str,
-    distractor: str,
-    n: int,
-    max_len: int,
-    device: str | None,
-):
+def sample_examples(name, n):
+    ds = load_split(name, streaming=True)
+    selected = []
+    print(f"Sampling {n} examples for {name}...")
+    for i, ex in tqdm(enumerate(ds), desc=f"Scanning {name}"):
+        if i < n:
+            selected.append(ex)
+        else:
+            j = random.randint(0, i)
+            if j < n:
+                selected[j] = ex
+        if i >= 10 * n:
+            break
+    if len(selected) < n:
+        print(f"Warning: Only found {len(selected)}/{n} examples for {name}.")
+    return selected
+
+def experiment(model_name, tasks, target, distractor, n, max_len, device):
     device = pick_device(device)
-    print(
-        f"\n=== Running {model_name} | target={target} | distractor={distractor} "
-        f"| n={n} | max_len={max_len} | device={device} ==="
+    model = HookedTransformer.from_pretrained(
+        model_name,
+        device=device
     )
 
-    model = HookedTransformer.from_pretrained(model_name, device=device)
+    tgt_cfg = dataset_config[target]
+    dis_cfg = dataset_config[distractor]
 
-    # Ensure consistent shuffling with proper seeding for reproducible results
-    target_ds = load_split(target).shuffle(seed=42).select(range(n))
-    dis_ds = load_split(distractor).shuffle(seed=42).select(range(n))
-    histories = build_histories(max_len)
-    metric_name = dataset_config[target]['metric']
-    
-    metric_by_len, cos_by_len, predictions_debug = {}, {}, {}
+    tgt_ds = sample_examples(target, n)
+    dis_ds = sample_examples(distractor, n)
 
-    for seq in tqdm(histories, desc="histories"):
+    histories = build_histories(tasks, max_len)
+
+    metric_acc = tgt_cfg["metric"] == "accuracy"
+    metric_rouge = tgt_cfg["metric"] == "rouge"
+    rouge_eval = evaluate.load("rouge") if metric_rouge else None
+
+    metric_by_len, cos_by_len, dbg_top5 = {}, {}, {}
+    all_debug_info = []
+
+    for seq in tqdm(histories, desc="Histories"):
         h = len(seq)
         preds, refs, sims = [], [], []
-        sequence_predictions = []
+        top_counter = Counter()
+        hist_task = seq[0]
+        hist_ds = tgt_ds if hist_task == target else dis_ds
 
-        for i in tqdm(range(n), leave=False, desc="examples"):
+        for i in tqdm(range(n), desc=f"  - History({h}, {hist_task})", leave=False):
+            if i >= len(tgt_ds) or not hist_ds:
+                continue
+
             turns = []
-            for tag in seq:
-                p, a = (
-                    build_prompt(target, target_ds[i])
-                    if tag == "A"
-                    else build_prompt(distractor, dis_ds[i])
-                )
-                turns.append(f"{p}{a}")
-            history = "\n\n".join(turns)
+            # FIX: This loop now correctly selects unique examples for the history
+            # that are different from the target example at index `i`.
+            for j in range(h):
+                hist_idx = (i + j + 1) % len(hist_ds)
+                pp, aa = build_prompt(hist_task, hist_ds[hist_idx])
+                turns.append(f"{pp}{aa}")
 
-            final_p, gold = build_prompt(target, target_ds[i])
-            conv = (history + "\n\n" if history else "") + final_p
+            history_text = "\n\n".join(turns)
+            final_p, gold = build_prompt(target, tgt_ds[i])
+            conv = (history_text + "\n\n" if history_text else "") + final_p
 
-            cache, logits = run_example(model, conv)
+            logits, cos_list = run_example(model, conv)
 
-            if metric_name == "accuracy":
-                pred = pick_answer(logits, dataset_config[target], model)
-                preds.append(pred)
+            predicted_answer = None
+            if metric_acc:
+                pred_label = pick_answer(logits, tgt_cfg, model)
+                preds.append(pred_label)
                 refs.append(gold)
-                sequence_predictions.append({
-                    "example_id": i,
-                    "sequence_pattern": seq,
-                    "predicted_answer": pred,
-                    "expected_answer": gold,
-                    "is_correct": pred == gold,
-                    "prompt_snippet": final_p[:100] + "..." if len(final_p) > 100 else final_p
-                })
-            elif metric_name == "rouge":
-                prompt_tokens = model.to_tokens(conv, prepend_bos=True)
-                
-                generated_tokens = model.generate(
-                    prompt_tokens, 
-                    max_new_tokens=100, 
-                    temperature=0.0,
-                    do_sample=False,
-                    stop_at_eos=True
-                )
-                
-                full_text = model.to_string(generated_tokens[0])
-                
-                prompt_text = model.to_string(prompt_tokens[0])
-                generated_answer = full_text[len(prompt_text):].strip()
-                
-                extracted_answer = extract_answer_from_generation(generated_answer)
-                
-                preds.append(extracted_answer)
+                predicted_answer = pred_label
+            elif metric_rouge:
+                gen = greedy_generate(model, conv, 64)
+                generated_text = gen[len(conv):]
+                preds.append(generated_text)
                 refs.append(gold)
-                sequence_predictions.append({
-                    "example_id": i,
-                    "sequence_pattern": seq,
-                    "predicted_answer": extracted_answer,
-                    "expected_answer": gold,
-                    "full_generation": generated_answer[:200] + "..." if len(generated_answer) > 200 else generated_answer,
-                    "prompt_snippet": final_p[:100] + "..." if len(final_p) > 100 else final_p
-                })
+                predicted_answer = generated_text
 
-            sims.append(layer_cosines(cache, logits, model.W_U, model.cfg.n_layers))
+            sims.append(cos_list)
+            for tid in torch.topk(logits, 5, dim=-1).indices[0].tolist():
+                top_counter[tid] += 1
 
-        # Calculate metrics
-        if metric_name == "accuracy":
+            debug_entry = {
+                "prompt_text": conv,
+                "model_prediction": predicted_answer,
+                "expected_answer": gold,
+                "config": {
+                    "target_dataset": target,
+                    "distractor_dataset": distractor if hist_task == distractor else None,
+                    "history_len": h,
+                    "history_content_task": hist_task,
+                    "target_example_dataset_idx": i,
+                }
+            }
+            all_debug_info.append(debug_entry)
+            torch.cuda.empty_cache()
+
+        if not refs: continue
+
+        if metric_acc:
             acc = sum(p == r for p, r in zip(preds, refs)) / len(refs)
             metric_by_len.setdefault(str(h), []).append(acc)
-        elif metric_name == "rouge":
-            rouge_scores = eval_rouge(preds, refs)
-            # Use ROUGE-L F1 score as the main metric
-            metric_by_len.setdefault(str(h), []).append(rouge_scores['rougeL'])
+        elif metric_rouge:
+            scores = [
+                rouge_eval.compute(predictions=[p], references=[r])["rougeL"]
+                for p, r in zip(preds, refs)
+            ]
+            metric_by_len.setdefault(str(h), []).append(float(np.mean(scores)))
 
         cos_by_len.setdefault(str(h), []).append(np.mean(sims, axis=0).tolist())
-        
-        predictions_debug[str(h)] = sequence_predictions
+        dbg_top5[str(h)] = [
+            (model.to_string(t).strip(), c) for t, c in top_counter.most_common(5)
+        ]
 
-    return metric_by_len, cos_by_len, metric_name, predictions_debug
+    return metric_by_len, cos_by_len, tgt_cfg["metric"], dbg_top5, all_debug_info
 
-def save_results(
-    model: str,
-    target: str,
-    distractor: str,
-    metric_name: str,
-    metric_by_len,
-    cos_by_len,
-    predictions_debug,
-    out_dir="results",
-):
+def save_results(model, target, distractor, metric_name, metric_by_len, cos_by_len, dbg, out_dir="results"):
     os.makedirs(out_dir, exist_ok=True)
-    base_filename = f"{model.replace('/','@')}__{target}_vs_{distractor}"
-    
-    # Main results file
-    main_results = {
-        "experiment_metadata": {
-            "description": "Context switching analysis experiment results",
-            "model_name": model,
-            "target_task": target,
-            "distractor_task": distractor,
-            "evaluation_metric": metric_name
-        },
-        "performance_metrics": {
-            "description": f"Model performance ({metric_name}) as a function of conversation history length",
-            "explanation": "Each history length may have multiple sequence patterns (e.g., [B,A], [A,B] for length 2)",
-            "data_by_history_length": metric_by_len
-        },
-        "layer_analysis": {
-            "description": "Cosine similarity between intermediate layer representations and final layer output",
-            "explanation": "Shows how much each layer's representation aligns with the final prediction across different history lengths",
-            "cosine_similarities_by_history_length": cos_by_len
-        }
-    }
-    
-    # Save main results
-    main_file = os.path.join(out_dir, f"{base_filename}.json")
-    with open(main_file, "w") as f:
-        json.dump(main_results, f, indent=2)
-    print("saved main results to", main_file)
-    
-    # Save detailed predictions for debugging
-    debug_results = {
-        "experiment_metadata": {
-            "description": "Detailed predictions for debugging context switching analysis",
-            "model_name": model,
-            "target_task": target,
-            "distractor_task": distractor,
-            "evaluation_metric": metric_name
-        },
-        "predictions_by_history_length": {
-            "description": "All model predictions with expected answers for each history length and sequence pattern",
-            "explanation": "Shows what the model actually predicted vs what was expected, useful for debugging performance issues",
-            "data": predictions_debug
-        }
-    }
-    
-    debug_file = os.path.join(out_dir, f"{base_filename}_debug.json")
-    with open(debug_file, "w") as f:
-        json.dump(debug_results, f, indent=2)
-    print("saved debug predictions to", debug_file)
+    fname = f"{model.replace('/','@')}__{target}_vs_{distractor}.json"
+    with open(os.path.join(out_dir, fname), "w") as f:
+        json.dump(
+            {
+                "model": model,
+                "target": target,
+                "distractor": distractor,
+                "metric_name": metric_name,
+                "metric_by_len": metric_by_len,
+                "cos_by_len": cos_by_len,
+                "debug_top5_by_len": dbg,
+            },
+            f,
+            indent=2,
+        )
+
+def save_debug_log(model, target, distractor, debug_info, out_dir="results"):
+    os.makedirs(out_dir, exist_ok=True)
+    fname = f"{model.replace('/','@')}__{target}_vs_{distractor}_debug.json"
+    with open(os.path.join(out_dir, fname), "w") as f:
+        json.dump(
+            {
+                "model": model,
+                "target_task": target,
+                "distractor_task": distractor,
+                "debug_examples": debug_info,
+            },
+            f,
+            indent=2,
+        )
 
 def main():
     ap = argparse.ArgumentParser()
@@ -246,8 +224,10 @@ def main():
     ap.add_argument("--out_dir", default="results")
     args = ap.parse_args()
 
-    metric_by_len, cos_by_len, metric_name, predictions_debug = experiment(
+    tasks = [args.target, args.distractor]
+    metric_by_len, cos_by_len, metric_name, dbg, debug_log = experiment(
         args.model,
+        tasks,
         args.target,
         args.distractor,
         args.n,
@@ -261,7 +241,14 @@ def main():
         metric_name,
         metric_by_len,
         cos_by_len,
-        predictions_debug,
+        dbg,
+        args.out_dir,
+    )
+    save_debug_log(
+        args.model,
+        args.target,
+        args.distractor,
+        debug_log,
         args.out_dir,
     )
 

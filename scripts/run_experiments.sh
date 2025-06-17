@@ -3,21 +3,26 @@ set -e
 
 MODELS=(
 "EleutherAI/pythia-70m"
+# "mistralai/Mistral-7B-Instruct-v0.1"
+# "meta-llama/Llama-2-7b-chat-hf"
 # "Qwen/Qwen2.5-0.5B"
-# "meta-llama/Meta-Llama-3-8B"
 )
 
 TASKS=(
+    # "tweet_qa"
     "mmlu"
     "rotten_tomatoes"
-    "cnn_dailymail"
 )
 
 for MODEL in "${MODELS[@]}"; do
   for TARGET in "${TASKS[@]}"; do
+    echo "=== RUNNING CONTROL: MODEL=$MODEL TARGET=$TARGET DISTRACTOR=$TARGET ==="
+    python experiment.py --model "$MODEL" --target "$TARGET" --distractor "$TARGET" --max_len 6 --n 100
+
     for DIST in "${TASKS[@]}"; do
       if [ "$TARGET" != "$DIST" ]; then
-        python experiment.py --model "$MODEL" --target "$TARGET" --distractor "$DIST" --max_len 4 --n 1
+        echo "=== RUNNING CONTEXT-SWITCH: MODEL=$MODEL TARGET=$TARGET DISTRACTOR=$DIST ==="
+        python experiment.py --model "$MODEL" --target "$TARGET" --distractor "$DIST" --max_len 6 --n 100
       fi
     done
   done

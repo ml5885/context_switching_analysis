@@ -5,44 +5,19 @@ import os
 import glob
 
 import matplotlib.pyplot as plt
+from tqdm import tqdm
 
 def load_result(path):
     with open(path) as f:
         data = json.load(f)
     
-    # Handle both old and new JSON formats
-    if "experiment_metadata" in data:
-        # New format
-        metric_data = data["performance_metrics"]["data_by_history_length"]
-        cos_data = data["layer_analysis"]["cosine_similarities_by_history_length"]
-        metric_name = data["experiment_metadata"]["evaluation_metric"]
-        model = data["experiment_metadata"]["model_name"]
-        target = data["experiment_metadata"]["target_task"]
-        distractor = data["experiment_metadata"]["distractor_task"]
-    elif "performance_by_history_length" in data:
-        # Previous format
-        metric_data = data["performance_by_history_length"]["data"]
-        cos_data = data["cosine_similarity_by_history_length"]["data"]
-        metric_name = data["experiment_info"]["metric_used"]
-        model = data["experiment_info"]["model"]
-        target = data["experiment_info"]["target_task"]
-        distractor = data["experiment_info"]["distractor_task"]
-    else:
-        # Original format (for backward compatibility)
-        metric_data = data["metric_by_len"]
-        cos_data = data["cos_by_len"]
-        metric_name = data["metric_name"]
-        model = data["model"]
-        target = data["target"]
-        distractor = data["distractor"]
-    
     return {
-        "metric_by_len": {int(k): v for k, v in metric_data.items()},
-        "cos_by_len": {int(k): [np.array(x) for x in v] for k, v in cos_data.items()},
-        "metric_name": metric_name,
-        "model": model,
-        "target": target,
-        "distractor": distractor
+        "metric_by_len": {int(k): v for k, v in data["metric_by_len"].items()},
+        "cos_by_len": {int(k): [np.array(x) for x in v] for k, v in data["cos_by_len"].items()},
+        "metric_name": data["metric_name"],
+        "model": data["model"],
+        "target": data["target"],
+        "distractor": data["distractor"]
     }
 
 def plot_metric(data, out_dir):
@@ -59,6 +34,7 @@ def plot_metric(data, out_dir):
 
     fname = os.path.join(out_dir, "metric.png")
     plt.savefig(fname, bbox_inches="tight")
+    plt.close() # FIX: Close the figure to free up memory
     print("metric plot saved to", fname)
 
 def plot_cos(data, out_dir):
@@ -75,6 +51,7 @@ def plot_cos(data, out_dir):
 
     fname = os.path.join(out_dir, "cosine.png")
     plt.savefig(fname, bbox_inches="tight")
+    plt.close() # FIX: Close the figure to free up memory
     print("cosine plot saved to", fname)
 
 def main():
@@ -93,15 +70,20 @@ def main():
         else glob.glob(os.path.join(args.result, "*.json"))
     )
 
+    # Filter out debug files
+    paths = [p for p in paths if not p.endswith("_debug.json")]
+
     os.makedirs(args.out_dir, exist_ok=True)
 
-    for p in paths:
+    for p in tqdm(paths, desc="Generating plots"):
         data = load_result(p)
         base = os.path.splitext(os.path.basename(p))[0]
         out_sub = os.path.join(args.out_dir, base)
         os.makedirs(out_sub, exist_ok=True)
         plot_metric(data, out_sub)
         plot_cos(data, out_sub)
+    
+    print(f"\nDone. All plots are in {args.out_dir}/")
 
 if __name__ == "__main__":
     main()
