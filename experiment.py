@@ -43,13 +43,6 @@ def run_example(model, text):
 
     return final_logits.cpu(), layer_sims.tolist()
 
-def build_histories(tasks, max_len):
-    out = []
-    for h in range(1, max_len + 1):
-        for t in tasks:
-            out.append([t] * h)
-    return out
-
 def pick_answer(logits, cfg, model):
     ids = [model.to_tokens(tok)[0, 0].item() for tok in cfg["answer_tokens"]]
     idx = torch.argmax(logits[:, ids], dim=-1).item()
@@ -65,37 +58,52 @@ def greedy_generate(model, prompt, max_new_tokens=32):
             break
     return model.to_string(toks[0])
 
-def sample_examples(name, n):
+def sample_examples(name, n, max_hist_len, is_control):
+    # For the control condition (target == distractor), we need enough unique
+    # examples to build the history without overlapping with the test example.
+    num_to_sample = n + max_hist_len if is_control else n
+    
     ds = load_split(name, streaming=True)
     selected = []
-    print(f"Sampling {n} examples for {name}...")
-    for i, ex in tqdm(enumerate(ds), desc=f"Scanning {name}"):
-        if i < n:
+    
+    print(f"Sampling {num_to_sample} examples for {name}...")
+    # Set a generous limit for scanning to ensure we get enough examples
+    scan_limit = num_to_sample * 10
+    pbar = tqdm(enumerate(ds), desc=f"Scanning {name}", total=scan_limit)
+    
+    for i, ex in pbar:
+        if len(selected) < num_to_sample:
             selected.append(ex)
         else:
+            # Reservoir sampling to ensure a random selection
             j = random.randint(0, i)
-            if j < n:
+            if j < num_to_sample:
                 selected[j] = ex
-        if i >= 10 * n:
+        # Stop scanning after a reasonable number of iterations
+        if i >= scan_limit:
+            pbar.close() # Manually close if we break early
             break
-    if len(selected) < n:
-        print(f"Warning: Only found {len(selected)}/{n} examples for {name}.")
+
+    if not pbar.disable:
+        pbar.close()
+
+    if len(selected) < num_to_sample:
+        print(f"Warning: Only found {len(selected)}/{num_to_sample} examples for {name}.")
+    
     return selected
 
-def experiment(model_name, tasks, target, distractor, n, max_len, device):
+def experiment(model_name, target, distractor, n, max_len, device):
     device = pick_device(device)
     model = HookedTransformer.from_pretrained(
         model_name,
         device=device
     )
 
+    is_control = target == distractor
     tgt_cfg = dataset_config[target]
-    dis_cfg = dataset_config[distractor]
-
-    tgt_ds = sample_examples(target, n)
-    dis_ds = sample_examples(distractor, n)
-
-    histories = build_histories(tasks, max_len)
+    
+    tgt_ds = sample_examples(target, n, max_len, is_control)
+    dis_ds = tgt_ds if is_control else sample_examples(distractor, n, max_len, False)
 
     metric_acc = tgt_cfg["metric"] == "accuracy"
     metric_rouge = tgt_cfg["metric"] == "rouge"
@@ -104,21 +112,23 @@ def experiment(model_name, tasks, target, distractor, n, max_len, device):
     metric_by_len, cos_by_len, dbg_top5 = {}, {}, {}
     all_debug_info = []
 
-    for seq in tqdm(histories, desc="Histories"):
-        h = len(seq)
+    # FIX: The main loop now iterates through history lengths directly.
+    # It no longer uses the flawed `build_histories` function.
+    for h in tqdm(range(1, max_len + 1), desc="Testing History Lengths"):
         preds, refs, sims = [], [], []
         top_counter = Counter()
-        hist_task = seq[0]
-        hist_ds = tgt_ds if hist_task == target else dis_ds
-
-        for i in tqdm(range(n), desc=f"  - History({h}, {hist_task})", leave=False):
+        
+        # FIX: The history task is now ALWAYS the specified distractor.
+        hist_task = distractor 
+        hist_ds = dis_ds
+        
+        for i in tqdm(range(n), desc=f"  - Hist({h}, {hist_task})", leave=False):
             if i >= len(tgt_ds) or not hist_ds:
                 continue
 
             turns = []
-            # FIX: This loop now correctly selects unique examples for the history
-            # that are different from the target example at index `i`.
             for j in range(h):
+                # Correctly select unique, non-overlapping examples for history
                 hist_idx = (i + j + 1) % len(hist_ds)
                 pp, aa = build_prompt(hist_task, hist_ds[hist_idx])
                 turns.append(f"{pp}{aa}")
@@ -152,7 +162,7 @@ def experiment(model_name, tasks, target, distractor, n, max_len, device):
                 "expected_answer": gold,
                 "config": {
                     "target_dataset": target,
-                    "distractor_dataset": distractor if hist_task == distractor else None,
+                    "distractor_dataset": distractor,
                     "history_len": h,
                     "history_content_task": hist_task,
                     "target_example_dataset_idx": i,
@@ -165,15 +175,15 @@ def experiment(model_name, tasks, target, distractor, n, max_len, device):
 
         if metric_acc:
             acc = sum(p == r for p, r in zip(preds, refs)) / len(refs)
-            metric_by_len.setdefault(str(h), []).append(acc)
+            metric_by_len[str(h)] = acc 
         elif metric_rouge:
             scores = [
                 rouge_eval.compute(predictions=[p], references=[r])["rougeL"]
                 for p, r in zip(preds, refs)
             ]
-            metric_by_len.setdefault(str(h), []).append(float(np.mean(scores)))
+            metric_by_len[str(h)] = float(np.mean(scores))
 
-        cos_by_len.setdefault(str(h), []).append(np.mean(sims, axis=0).tolist())
+        cos_by_len[str(h)] = np.mean(sims, axis=0).tolist()
         dbg_top5[str(h)] = [
             (model.to_string(t).strip(), c) for t, c in top_counter.most_common(5)
         ]
@@ -218,22 +228,21 @@ def main():
     ap.add_argument("--model", required=True)
     ap.add_argument("--target", required=True)
     ap.add_argument("--distractor", required=True)
-    ap.add_argument("--max_len", type=int, default=10)
+    ap.add_argument("--max_len", type=int, default=6)
     ap.add_argument("--n", type=int, default=100)
     ap.add_argument("--device", default=None)
     ap.add_argument("--out_dir", default="results")
     args = ap.parse_args()
 
-    tasks = [args.target, args.distractor]
     metric_by_len, cos_by_len, metric_name, dbg, debug_log = experiment(
         args.model,
-        tasks,
         args.target,
         args.distractor,
         args.n,
         args.max_len,
         args.device,
     )
+    
     save_results(
         args.model,
         args.target,
