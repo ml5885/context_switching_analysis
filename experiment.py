@@ -59,15 +59,12 @@ def greedy_generate(model, prompt, max_new_tokens=32):
     return model.to_string(toks[0])
 
 def sample_examples(name, n, max_hist_len, is_control):
-    # For the control condition (target == distractor), we need enough unique
-    # examples to build the history without overlapping with the test example.
     num_to_sample = n + max_hist_len if is_control else n
     
     ds = load_split(name, streaming=True)
     selected = []
     
     print(f"Sampling {num_to_sample} examples for {name}...")
-    # Set a generous limit for scanning to ensure we get enough examples
     scan_limit = num_to_sample * 10
     pbar = tqdm(enumerate(ds), desc=f"Scanning {name}", total=scan_limit)
     
@@ -75,13 +72,11 @@ def sample_examples(name, n, max_hist_len, is_control):
         if len(selected) < num_to_sample:
             selected.append(ex)
         else:
-            # Reservoir sampling to ensure a random selection
             j = random.randint(0, i)
             if j < num_to_sample:
                 selected[j] = ex
-        # Stop scanning after a reasonable number of iterations
         if i >= scan_limit:
-            pbar.close() # Manually close if we break early
+            pbar.close()
             break
 
     if not pbar.disable:
@@ -94,9 +89,10 @@ def sample_examples(name, n, max_hist_len, is_control):
 
 def experiment(model_name, target, distractor, n, max_len, device):
     device = pick_device(device)
-    model = HookedTransformer.from_pretrained(
+    model = HookedTransformer.from_pretrained_no_processing(
         model_name,
-        device=device
+        device=device,
+        dtype=torch.bfloat16
     )
 
     is_control = target == distractor
@@ -112,13 +108,9 @@ def experiment(model_name, target, distractor, n, max_len, device):
     metric_by_len, cos_by_len, dbg_top5 = {}, {}, {}
     all_debug_info = []
 
-    # FIX: The main loop now iterates through history lengths directly.
-    # It no longer uses the flawed `build_histories` function.
     for h in tqdm(range(1, max_len + 1), desc="Testing History Lengths"):
         preds, refs, sims = [], [], []
-        top_counter = Counter()
-        
-        # FIX: The history task is now ALWAYS the specified distractor.
+        top_counter = Counter()        
         hist_task = distractor 
         hist_ds = dis_ds
         
@@ -128,7 +120,6 @@ def experiment(model_name, target, distractor, n, max_len, device):
 
             turns = []
             for j in range(h):
-                # Correctly select unique, non-overlapping examples for history
                 hist_idx = (i + j + 1) % len(hist_ds)
                 pp, aa = build_prompt(hist_task, hist_ds[hist_idx])
                 turns.append(f"{pp}{aa}")

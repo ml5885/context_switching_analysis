@@ -3,9 +3,7 @@
 #SBATCH --output=/home/%u/logs/sbatch/context_switching_%j.out
 #SBATCH --error=/home/%u/logs/sbatch/context_switching_%j.err
 #SBATCH --partition=general
-#SBATCH --time=2-00:00:00
-#SBATCH --ntasks=1
-#SBATCH --cpus-per-task=4
+#SBATCH --time=3:00:00
 #SBATCH --gres=gpu:L40S:1
 #SBATCH --mem=64G
 
@@ -27,6 +25,7 @@ cd /home/ml6/context_switching_analysis
 
 MODELS=(
     "mistralai/Mistral-7B-Instruct-v0.1"
+    "meta-llama/Llama-2-7b-chat-hf"
 )
 
 TASKS=(

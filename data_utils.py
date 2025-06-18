@@ -14,7 +14,7 @@ dataset_config = {
             "format with the tags provided: <Answer> </Answer>. Please read the "
             "following question and options and answer the question\n"
             "Question: {question}\n"
-            "(A) {choice_a}\n(B) {choice_b}\n(C) {choice_c}\n(D) {choice_d}\nAnswer:"
+            "(A) {choice_a}\n(B) {choice_b}\n(C) {choice_c}\n(D) {choice_d}\n<Answer>"
         ),
     },
     "rotten_tomatoes": {
@@ -30,7 +30,7 @@ dataset_config = {
             "Return only the sentiment label without any other text. Make sure to follow "
             "the format otherwise your answer will be disqualified:\n"
             "<Answer> positive / negative </Answer>.\n"
-            "Do not output neutral.\nAnswer:"
+            "Do not output neutral.\n<Answer>"
         ),
     },
     "tweetqa": {
