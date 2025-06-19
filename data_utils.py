@@ -3,8 +3,7 @@ from datasets import load_dataset
 dataset_config = {
     "mmlu": {
         "hf_name": "cais/mmlu",
-        # "subset": "abstract_algebra",
-        "subset": None,
+        "subset": "all",
         "split": "test",
         "metric": "accuracy",
         "labels": ["A", "B", "C", "D"],
