@@ -6,7 +6,7 @@ import tempfile
 import json
 import os
 from pandas_helpers import df_from_dir
-from plot import plot_metric, plot_pct_change
+from plot import plot_metric, plot_pct_change, plot_cosine
 
 print("Testing data loading and prompt building for all configured datasets...")
 
@@ -89,12 +89,22 @@ os.makedirs(tmp_dir, exist_ok=True)
 
 sample1 = {
     "metric_by_len": {"0": 0.5, "1": 0.52, "2": 0.54, "3": 0.56, "4": 0.58, "5": 0.6, "6": 0.62},
+    "cos_by_len": {
+        "0": [0.1, 0.2, 0.3],
+        "1": [0.15, 0.25, 0.35],
+        "2": [0.2, 0.3, 0.4]
+    },
     "model": "test-model",
     "target": "test-task",
     "distractor": "A"
 }
 sample2 = {
     "metric_by_len": {"0": 0.4, "1": 0.45, "2": 0.5, "3": 0.55, "4": 0.6, "5": 0.65, "6": 0.7},
+    "cos_by_len": {
+        "0": [0.5, 0.6, 0.7],
+        "1": [0.55, 0.65, 0.75],
+        "2": [0.6, 0.7, 0.8]
+    },
     "model": "test-model",
     "target": "test-task",
     "distractor": "B"
@@ -106,15 +116,21 @@ open(os.path.join(tmp_dir, "B.json"), "w").write(json.dumps(sample2))
 out_dir = os.path.join(tmp_dir, "plots_test")
 os.makedirs(out_dir, exist_ok=True)
 
-df, model, target = df_from_dir(tmp_dir)
+df, model, target, cos_dict = df_from_dir(tmp_dir)
 
 plot_metric(df, model, target, out_dir)
 plot_pct_change(df, model, target, out_dir)
+plot_cosine(cos_dict, model, target, out_dir)
 
 assert os.path.isfile(os.path.join(out_dir, "metric.png"))
 assert os.path.getsize(os.path.join(out_dir, "metric.png")) > 0
 
 assert os.path.isfile(os.path.join(out_dir, "metric_pct_change.png"))
 assert os.path.getsize(os.path.join(out_dir, "metric_pct_change.png")) > 0
+
+assert os.path.isfile(os.path.join(out_dir, "cosine_A.png"))
+assert os.path.getsize(os.path.join(out_dir, "cosine_A.png")) > 0
+assert os.path.isfile(os.path.join(out_dir, "cosine_B.png"))
+assert os.path.getsize(os.path.join(out_dir, "cosine_B.png")) > 0
 
 print("Plot generation tests passed.")

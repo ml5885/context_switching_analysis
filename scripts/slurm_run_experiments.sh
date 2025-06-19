@@ -5,7 +5,7 @@
 #SBATCH --partition=general
 #SBATCH --time=3:00:00
 #SBATCH --gres=gpu:L40S:1
-#SBATCH --mem=1248G
+#SBATCH --mem=128G
 
 export HF_HOME=/data/user_data/ml6/.hf_cache
 export HF_HUB_CACHE=/data/hf_cache/hub

@@ -96,7 +96,7 @@ def experiment(model_name, target, distractor, max_len, device, quantize=False):
     for h in tqdm(range(max_len + 1), desc="Testing History Lengths"):
         preds, refs, sims = [], [], []
         top_counter = Counter()
-        for i in range(n):
+        for i in tqdm(range(n), desc=f"Processing {target} examples with history length {h}"):
             history_text = build_history_text(distractor, dis_ds, i, h)
             final_p, gold = build_prompt(target, tgt_ds[i])
             assistant_prompt = "Assistant:"

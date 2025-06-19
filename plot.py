@@ -36,17 +36,32 @@ def plot_pct_change(df, model, target, out_dir):
     plt.close()
     print("pct change plot saved to", path)
 
+def plot_cosine(cos_dict, model, target, out_dir):
+    for distractor, cos_df in cos_dict.items():
+        plt.figure()
+        for h_len, row in cos_df.iterrows():
+            plt.plot(cos_df.columns, row, marker="o", label=f"History {h_len}")
+        plt.xlabel("Layer")
+        plt.ylabel("Cosine Similarity")
+        plt.title(f"{model} | {target} | Distractor: {distractor}", fontsize=8)
+        plt.legend()
+        path = os.path.join(out_dir, f"cosine_{distractor}.png")
+        plt.savefig(path, bbox_inches="tight")
+        plt.close()
+        print("cosine plot saved to", path)
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--result_dir", required=True)
     ap.add_argument("--out_dir", default="plots")
     args = ap.parse_args()
     
-    df, model, target = df_from_dir(args.result_dir)
+    df, model, target, cos_dict = df_from_dir(args.result_dir)
     os.makedirs(args.out_dir, exist_ok=True)
     
     plot_metric(df, model, target, args.out_dir)
     plot_pct_change(df, model, target, args.out_dir)
+    plot_cosine(cos_dict, model, target, args.out_dir)
 
 if __name__ == "__main__":
     main()

@@ -2,10 +2,10 @@
 set -e
 
 MODELS=(
-"EleutherAI/pythia-70m:no-quantize"
+# "EleutherAI/pythia-70m:no-quantize"
 # "mistralai/Mistral-7B-Instruct-v0.1:quantize"
 # "meta-llama/Llama-2-7b-chat-hf:quantize"
-# "Qwen/Qwen2.5-1.5B:no-quantize"
+"Qwen/Qwen2.5-0.5B:no-quantize"
 )
 
 TASKS=(
