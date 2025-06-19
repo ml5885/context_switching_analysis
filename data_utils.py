@@ -3,7 +3,8 @@ from datasets import load_dataset
 dataset_config = {
     "mmlu": {
         "hf_name": "cais/mmlu",
-        "subset": "abstract_algebra",
+        # "subset": "abstract_algebra",
+        "subset": None,
         "split": "test",
         "metric": "accuracy",
         "labels": ["A", "B", "C", "D"],
@@ -64,7 +65,7 @@ def build_prompt(dataset_name, sample):
     cfg = dataset_config[dataset_name]
     if dataset_name == "mmlu":
         prompt = cfg["prompt_template"].format(
-            topic=sample.get("subject", "Abstract Algebra"),
+            topic=sample.get("subject"),
             question=sample["question"],
             choice_a=sample["choices"][0],
             choice_b=sample["choices"][1],
