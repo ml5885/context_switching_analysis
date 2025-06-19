@@ -70,10 +70,11 @@ def build_history_text(task, samples, idx, length):
         sample = samples[(idx + j + 1) % len(samples)]
         prompt, answer = build_prompt(task, sample)
         suffix = cfg["answer_suffix"]
-        turns.append(
-            f"User: {prompt}\n"
-            f"Assistant: {answer}{suffix}"
-        )
+        if suffix:
+            full_answer = f" <Answer>{answer}{suffix}"
+        else:
+            full_answer = f" {answer}"
+        turns.append(f"User: {prompt}\nAssistant:{full_answer}")
     return "\n\n".join(turns)
 
 def experiment(model_name, target, distractor, max_len, device, quantize=False):
@@ -119,9 +120,14 @@ def experiment(model_name, target, distractor, max_len, device, quantize=False):
             history_text = build_history_text(hist_task, hist_ds, i, h)
 
             final_p, gold = build_prompt(target, tgt_ds[i])
+
+            assistant_prompt = "Assistant:"
+            if tgt_cfg["answer_suffix"]:  # has </Answer>
+                assistant_prompt += " <Answer>"
+
             conv = (
                 (history_text + "\n\n") if history_text else ""
-            ) + f"User: {final_p}\nAssistant:"
+            ) + f"User: {final_p}\n{assistant_prompt}"
 
             logits, cos_list = run_example(model, conv)
 

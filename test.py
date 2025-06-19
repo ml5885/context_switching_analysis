@@ -59,13 +59,18 @@ for h in range(max_len + 1):
 
     final_p, gold = build_prompt(target_task, target_ds[0])
 
+    tgt_cfg = dataset_config[target_task]
+    assistant_prompt = "Assistant:"
+    if tgt_cfg["answer_suffix"]:
+        assistant_prompt += " <Answer>"
+
     conv = (
         (history_text + "\n\n") if history_text else ""
-    ) + f"User: {final_p}\nAssistant:"
+    ) + f"User: {final_p}\n{assistant_prompt}"
 
     print(f"History contains {len(turns)} turn(s) from '{distractor_task}'.")
     if h > 0:
         print("History text:\n", history_text)
-    print("Final prompt:\n", f"User: {final_p}\nAssistant:")
+    print("Final prompt:\n", f"User: {final_p}\n{assistant_prompt}")
     print("Gold answer for final prompt:", gold)
     print(f"Total conversation length (chars): {len(conv)}")

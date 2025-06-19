@@ -14,7 +14,7 @@ dataset_config = {
             "format with the tags provided: <Answer> </Answer>. Please read the "
             "following question and options and answer the question\n"
             "Question: {question}\n"
-            "(A) {choice_a}\n(B) {choice_b}\n(C) {choice_c}\n(D) {choice_d}\n<Answer>"
+            "(A) {choice_a}\n(B) {choice_b}\n(C) {choice_c}\n(D) {choice_d}"
         ),
         "answer_suffix": "</Answer>",
     },
@@ -31,7 +31,7 @@ dataset_config = {
             "Return only the sentiment label without any other text. Make sure to follow "
             "the format otherwise your answer will be disqualified:\n"
             "<Answer> positive / negative </Answer>.\n"
-            "Do not output neutral.\n<Answer>"
+            "Do not output neutral."
         ),
         "answer_suffix": "</Answer>",
     },
@@ -45,7 +45,7 @@ dataset_config = {
         "prompt_template": (
             "Read the given tweet and answer the corresponding question.\n"
             "tweet: {tweet}\n"
-            "question: {question}\nAnswer:"
+            "question: {question}"
         ),
         "answer_suffix": "",
     },
@@ -80,7 +80,5 @@ def build_prompt(dataset_name, sample):
             tweet=sample["Tweet"],
             question=sample["Question"],
         )
-        answer = (
-            sample["Answer"][0] if sample["Answer"] else ""
-        )
+        answer = sample["Answer"][0] if sample["Answer"] else ""
     return prompt, answer
