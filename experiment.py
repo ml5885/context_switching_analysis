@@ -23,23 +23,20 @@ def run_example(model, text):
     final_logits = model(toks)[:, -1, :].detach()
     w_u = model.W_U
     layer_sims = torch.empty(model.cfg.n_layers, device="cpu")
+
     def make_hook(idx):
         def _hook(resid_post, hook):
             last_tok = resid_post[:, -1, :]
             sim = cosine(last_tok @ w_u, final_logits)
             layer_sims[idx] = sim.item()
         return _hook
+
     hooks = [
         (f"blocks.{i}.hook_resid_post", make_hook(i))
         for i in range(model.cfg.n_layers)
     ]
     model.run_with_hooks(toks, fwd_hooks=hooks, return_type=None)
     return final_logits.cpu(), layer_sims.tolist()
-
-def pick_answer(logits, cfg, model):
-    ids = [model.to_tokens(tok, prepend_bos=False)[0, 0].item() for tok in cfg["answer_tokens"]]
-    idx = torch.argmax(logits[:, ids], dim=-1).item()
-    return cfg["labels"][idx]
 
 def greedy_generate(model, prompt, max_new_tokens=32):
     toks = model.to_tokens(prompt, prepend_bos=True)
@@ -85,14 +82,17 @@ def experiment(model_name, target, distractor, max_len, device, quantize=False):
             model_name,
             device=device,
         )
+
     tgt_cfg = dataset_config[target]
     tgt_ds = sample_examples(target)
     dis_ds = tgt_ds if target == distractor else sample_examples(distractor)
     metric_acc = tgt_cfg["metric"] == "accuracy"
     metric_rouge = tgt_cfg["metric"] == "rouge"
     rouge_eval = evaluate.load("rouge") if metric_rouge else None
+
     metric_by_len, cos_by_len, dbg_top5, all_debug_info = {}, {}, {}, []
     n = len(tgt_ds)
+
     for h in tqdm(range(max_len + 1), desc="Testing History Lengths"):
         preds, refs, sims = [], [], []
         top_counter = Counter()
@@ -107,10 +107,14 @@ def experiment(model_name, target, distractor, max_len, device, quantize=False):
             ) + f"User: {final_p}\n{assistant_prompt}"
             logits, cos_list = run_example(model, conv)
             if metric_acc:
-                pred_label = pick_answer(logits, tgt_cfg, model)
-                preds.append(pred_label)
+                generated = greedy_generate(model, conv, max_new_tokens=10)
+                label = generated.strip()
+                suffix = tgt_cfg["answer_suffix"]
+                if suffix and suffix in label:
+                    label = label.split(suffix)[0]
+                preds.append(label)
                 refs.append(gold)
-                predicted_answer = pred_label
+                predicted_answer = label
             else:
                 generated_text = greedy_generate(model, conv, 64)
                 preds.append(generated_text)
