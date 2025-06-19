@@ -38,6 +38,7 @@ def run_example(model, text):
     model.run_with_hooks(toks, fwd_hooks=hooks, return_type=None)
     return final_logits.cpu(), layer_sims.tolist()
 
+@torch.no_grad()
 def greedy_generate(model, prompt, max_new_tokens=32):
     toks = model.to_tokens(prompt, prepend_bos=True)
     prompt_len = toks.shape[1]

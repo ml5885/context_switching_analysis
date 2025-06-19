@@ -1,11 +1,16 @@
 #!/bin/bash
+
 #SBATCH --job-name=context_switching
 #SBATCH --output=/home/%u/logs/sbatch/context_switching_%j.out
 #SBATCH --error=/home/%u/logs/sbatch/context_switching_%j.err
-#SBATCH --partition=general
 #SBATCH --time=3:00:00
-#SBATCH --gres=gpu:L40S:1
+#SBATCH --gres=gpu:1
 #SBATCH --mem=128G
+#SBATCH --gres=gpu:1              
+#SBATCH --constrain=A6000|L40|L40S
+#SBATCH --partition=preempt
+#SBATCH --mail-user=ml6@andrew.cmu.edu
+#SBATCH --mail-type=START,END,FAIL
 
 export HF_HOME=/data/user_data/ml6/.hf_cache
 export HF_HUB_CACHE=/data/hf_cache/hub
