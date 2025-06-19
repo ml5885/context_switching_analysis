@@ -11,6 +11,7 @@ export HF_HOME=/data/user_data/ml6/.hf_cache
 export HF_HUB_CACHE=/data/hf_cache/hub
 export HF_DATASETS_CACHE=/data/hf_cache/datasets
 export HF_HUB_OFFLINE=0
+export PYTORCH_CUDA_ALLOC_CONF="max_split_size_mb:128"
 
 mkdir -p /home/ml6/logs/sbatch
 mkdir -p "$HF_HOME"

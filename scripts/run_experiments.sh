@@ -1,5 +1,6 @@
 #!/bin/bash
 set -e
+export PYTORCH_CUDA_ALLOC_CONF="max_split_size_mb:128"
 
 MODELS=(
 # "EleutherAI/pythia-70m:no-quantize"
