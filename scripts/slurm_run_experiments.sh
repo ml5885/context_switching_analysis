@@ -24,8 +24,8 @@ set -e
 cd /home/ml6/context_switching_analysis
 
 MODELS=(
-    "mistralai/Mistral-7B-Instruct-v0.1"
-    "meta-llama/Llama-2-7b-chat-hf"
+    "mistralai/Mistral-7B-Instruct-v0.1:quantize"
+    "meta-llama/Llama-2-7b-chat-hf:quantize"
 )
 
 TASKS=(
@@ -34,14 +34,23 @@ TASKS=(
     "tweetqa"
 )
 
-for MODEL in "${MODELS[@]}"; do
+for MODEL_INFO in "${MODELS[@]}"; do
+    MODEL=$(echo "$MODEL_INFO" | cut -d':' -f1)
+    QUANTIZE_INFO=$(echo "$MODEL_INFO" | cut -d':' -f2)
+
+    QUANTIZE_FLAG=""
+    if [ "$QUANTIZE_INFO" == "quantize" ]; then
+        QUANTIZE_FLAG="--quantize"
+    fi
+
     for TARGET in "${TASKS[@]}"; do
         echo "=== RUNNING CONTROL: model=$MODEL target=$TARGET distractor=$TARGET ==="
         python experiment.py \
             --model "$MODEL" \
             --target "$TARGET" \
             --distractor "$TARGET" \
-            --max_len 6
+            --max_len 6 \
+            $QUANTIZE_FLAG
 
         for DIST in "${TASKS[@]}"; do
             if [ "$TARGET" != "$DIST" ]; then
@@ -50,7 +59,8 @@ for MODEL in "${MODELS[@]}"; do
                     --model "$MODEL" \
                     --target "$TARGET" \
                     --distractor "$DIST" \
-                    --max_len 6
+                    --max_len 6 \
+                    $QUANTIZE_FLAG
             fi
         done
     done

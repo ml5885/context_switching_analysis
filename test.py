@@ -1,5 +1,7 @@
+import evaluate
 from transformer_lens import HookedTransformer
 from data_utils import load_split, build_prompt, dataset_config
+from experiment import build_history_text
 
 print("Testing data loading and prompt building for all configured datasets...")
 for name in dataset_config.keys():
@@ -9,6 +11,35 @@ for name in dataset_config.keys():
     prompt, answer = build_prompt(name, sample)
     print(f"Sample prompt:\n{prompt}")
     print(f"Sample answer: {answer}")
+
+    cfg = dataset_config[name]
+    metric_name = cfg["metric"]
+    print(f"Testing metric: {metric_name}")
+    if metric_name == "accuracy":
+        preds = ["A", "B", "C", "D", "A"]
+        refs = ["A", "C", "C", "D", "B"]
+        acc = sum(p == r for p, r in zip(preds, refs)) / len(refs)
+        print(f"Accuracy test: {acc} (expected 0.6 for default mocks)")
+    elif metric_name == "rouge":
+        rouge_eval = evaluate.load("rouge")
+        preds = [
+            "hello there world",
+            "general kenobi",
+            "this is a test",
+            "another one",
+            "foo bar",
+        ]
+        refs = [
+            "hello there",
+            "general kenobi",
+            "this is a test sentence",
+            "another one bites the dust",
+            "foo bar baz",
+        ]
+        rouge_res = rouge_eval.compute(predictions=preds, references=refs)
+        rl = rouge_res["rougeL"]
+        score = rl["fmeasure"] if isinstance(rl, dict) else float(rl)
+        print(f"ROUGE-L F1 test: {score}")
 
 print("\n--- Testing conversation history building ---")
 max_len = 2
@@ -23,30 +54,18 @@ distractor_ds = list(load_split(distractor_task, streaming=False))
 for h in range(max_len + 1):
     print(f"\n--- History length: {h} ---")
 
-    turns = []
-    for j in range(h):
-        hist_sample = distractor_ds[j + 1]
-        pp, aa = build_prompt(distractor_task, hist_sample)
-        suffix = dataset_config[distractor_task]["answer_suffix"]
-        turns.append(f"{pp}{aa}{suffix}")
-
-    history_text = "\n\n".join(turns)
+    history_text = build_history_text(distractor_task, distractor_ds, 0, h)
+    turns = history_text.split("\n\n") if h > 0 else []
 
     final_p, gold = build_prompt(target_task, target_ds[0])
 
-    conv = (history_text + "\n\n" if history_text else "") + final_p
+    conv = (
+        (history_text + "\n\n") if history_text else ""
+    ) + f"User: {final_p}\nAssistant:"
 
     print(f"History contains {len(turns)} turn(s) from '{distractor_task}'.")
     if h > 0:
         print("History text:\n", history_text)
-    print("Final prompt:\n", final_p)
+    print("Final prompt:\n", f"User: {final_p}\nAssistant:")
     print("Gold answer for final prompt:", gold)
     print(f"Total conversation length (chars): {len(conv)}")
-
-print("\n--- Testing model loading ---")
-try:
-    model = HookedTransformer.from_pretrained("EleutherAI/pythia-70m", device="cpu")
-    print("Model 'EleutherAI/pythia-70m' loaded successfully.")
-    del model
-except Exception as e:
-    print(f"Failed to load model: {e}")

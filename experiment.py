@@ -63,14 +63,34 @@ def sample_examples(name):
     print(f"Loaded {len(ds)} examples from {name}.")
     return list(ds)
 
-def experiment(model_name, target, distractor, max_len, device):
-    device = pick_device(device)
-    model = HookedTransformer.from_pretrained_no_processing(
-        model_name,
-        device=device,
-        dtype=torch.bfloat16
-    )
+def build_history_text(task, samples, idx, length):
+    turns = []
+    cfg = dataset_config[task]
+    for j in range(length):
+        sample = samples[(idx + j + 1) % len(samples)]
+        prompt, answer = build_prompt(task, sample)
+        suffix = cfg["answer_suffix"]
+        turns.append(
+            f"User: {prompt}\n"
+            f"Assistant: {answer}{suffix}"
+        )
+    return "\n\n".join(turns)
 
+def experiment(model_name, target, distractor, max_len, device, quantize=False):
+    device = pick_device(device)
+
+    if quantize:
+        model = HookedTransformer.from_pretrained_no_processing(
+            model_name,
+            device=device,
+            dtype=torch.bfloat16
+        )
+    else:
+        model = HookedTransformer.from_pretrained(
+            model_name,
+            device=device,
+        )
+    
     is_control = target == distractor
     tgt_cfg = dataset_config[target]
     
@@ -96,16 +116,12 @@ def experiment(model_name, target, distractor, max_len, device):
             if not hist_ds:
                 continue
 
-            turns = []
-            for j in range(h):
-                hist_idx = (i + j + 1) % len(hist_ds)
-                pp, aa = build_prompt(hist_task, hist_ds[hist_idx])
-                suffix = dataset_config[hist_task]["answer_suffix"]
-                turns.append(f"{pp}{aa}{suffix}")
+            history_text = build_history_text(hist_task, hist_ds, i, h)
 
-            history_text = "\n\n".join(turns)
             final_p, gold = build_prompt(target, tgt_ds[i])
-            conv = (history_text + "\n\n" if history_text else "") + final_p
+            conv = (
+                (history_text + "\n\n") if history_text else ""
+            ) + f"User: {final_p}\nAssistant:"
 
             logits, cos_list = run_example(model, conv)
 
@@ -145,13 +161,11 @@ def experiment(model_name, target, distractor, max_len, device):
 
         if metric_acc:
             acc = sum(p == r for p, r in zip(preds, refs)) / len(refs)
-            metric_by_len[str(h)] = acc 
+            metric_by_len[str(h)] = acc
         elif metric_rouge:
-            scores = [
-                rouge_eval.compute(predictions=[p], references=[r])["rougeL"]
-                for p, r in zip(preds, refs)
-            ]
-            metric_by_len[str(h)] = float(np.mean(scores))
+            rouge_res = rouge_eval.compute(predictions=preds, references=refs)
+            rl = rouge_res["rougeL"]
+            metric_by_len[str(h)] = rl["fmeasure"] if isinstance(rl, dict) else float(rl)
 
         cos_by_len[str(h)] = np.mean(sims, axis=0).tolist()
         dbg_top5[str(h)] = [
@@ -201,6 +215,7 @@ def main():
     ap.add_argument("--max_len", type=int, default=6)
     ap.add_argument("--device", default=None)
     ap.add_argument("--out_dir", default="results")
+    ap.add_argument("--quantize", action="store_true", help="Quantize model to bfloat16")
     args = ap.parse_args()
 
     metric_by_len, cos_by_len, metric_name, dbg, debug_log = experiment(
@@ -209,6 +224,7 @@ def main():
         args.distractor,
         args.max_len,
         args.device,
+        args.quantize,
     )
     
     save_results(
