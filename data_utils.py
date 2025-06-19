@@ -16,6 +16,7 @@ dataset_config = {
             "Question: {question}\n"
             "(A) {choice_a}\n(B) {choice_b}\n(C) {choice_c}\n(D) {choice_d}\n<Answer>"
         ),
+        "answer_suffix": "</Answer>",
     },
     "rotten_tomatoes": {
         "hf_name": "cornell-movie-review-data/rotten_tomatoes",
@@ -32,6 +33,7 @@ dataset_config = {
             "<Answer> positive / negative </Answer>.\n"
             "Do not output neutral.\n<Answer>"
         ),
+        "answer_suffix": "</Answer>",
     },
     "tweetqa": {
         "hf_name": "ucsbnlp/tweet_qa",
@@ -45,6 +47,7 @@ dataset_config = {
             "tweet: {tweet}\n"
             "question: {question}\nAnswer:"
         ),
+        "answer_suffix": "",
     },
 }
 

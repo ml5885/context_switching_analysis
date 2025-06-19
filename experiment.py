@@ -100,7 +100,8 @@ def experiment(model_name, target, distractor, max_len, device):
             for j in range(h):
                 hist_idx = (i + j + 1) % len(hist_ds)
                 pp, aa = build_prompt(hist_task, hist_ds[hist_idx])
-                turns.append(f"{pp}{aa}")
+                suffix = dataset_config[hist_task]["answer_suffix"]
+                turns.append(f"{pp}{aa}{suffix}")
 
             history_text = "\n\n".join(turns)
             final_p, gold = build_prompt(target, tgt_ds[i])

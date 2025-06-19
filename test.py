@@ -27,7 +27,8 @@ for h in range(max_len + 1):
     for j in range(h):
         hist_sample = distractor_ds[j + 1]
         pp, aa = build_prompt(distractor_task, hist_sample)
-        turns.append(f"{pp}{aa}")
+        suffix = dataset_config[distractor_task]["answer_suffix"]
+        turns.append(f"{pp}{aa}{suffix}")
 
     history_text = "\n\n".join(turns)
 
