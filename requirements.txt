@@ -3,6 +3,7 @@ transformer_lens
 datasets
 evaluate
 matplotlib
+pandas
 scikit-learn
 rouge-score
 nltk

@@ -9,9 +9,9 @@ MODELS=(
 )
 
 TASKS=(
-    # "tweet_qa"
     "mmlu"
     "rotten_tomatoes"
+    "tweet_qa"
 )
 
 for MODEL_INFO in "${MODELS[@]}"; do

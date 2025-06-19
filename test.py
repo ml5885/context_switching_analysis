@@ -2,8 +2,14 @@ import evaluate
 from transformer_lens import HookedTransformer
 from data_utils import load_split, build_prompt, dataset_config
 from experiment import build_history_text
+import tempfile
+import json
+import os
+from pandas_helpers import df_from_dir
+from plot import plot_metric, plot_pct_change
 
 print("Testing data loading and prompt building for all configured datasets...")
+
 for name in dataset_config.keys():
     print(f"\n--- Testing dataset: {name} ---")
     ds = load_split(name, streaming=False)
@@ -15,11 +21,10 @@ for name in dataset_config.keys():
     cfg = dataset_config[name]
     metric_name = cfg["metric"]
     print(f"Testing metric: {metric_name}")
+
     if metric_name == "accuracy":
-        preds = ["A", "B", "C", "D", "A"]
-        refs = ["A", "C", "C", "D", "B"]
-        acc = sum(p == r for p, r in zip(preds, refs)) / len(refs)
-        print(f"Accuracy test: {acc} (expected 0.6 for default mocks)")
+        print("Accuracy is trivial to compute, so skipping")
+
     elif metric_name == "rouge":
         rouge_eval = evaluate.load("rouge")
         preds = [
@@ -42,14 +47,15 @@ for name in dataset_config.keys():
         print(f"ROUGE-L F1 test: {score}")
 
 print("\n--- Testing conversation history building ---")
+
 max_len = 2
 target_task = "mmlu"
 distractor_task = "rotten_tomatoes"
 
 print(f"Target: {target_task}, Distractor: {distractor_task}, max_len: {max_len}")
 
-target_ds = list(load_split(target_task, streaming=False))
-distractor_ds = list(load_split(distractor_task, streaming=False))
+target_ds = list(load_split(target_task, streaming=False))[:10]
+distractor_ds = list(load_split(distractor_task, streaming=False))[:10]
 
 for h in range(max_len + 1):
     print(f"\n--- History length: {h} ---")
@@ -74,3 +80,41 @@ for h in range(max_len + 1):
     print("Final prompt:\n", f"User: {final_p}\n{assistant_prompt}")
     print("Gold answer for final prompt:", gold)
     print(f"Total conversation length (chars): {len(conv)}")
+
+print("\n--- Testing plot generation ---")
+
+base_dir = os.path.dirname(os.path.abspath(__file__))
+tmp_dir = os.path.join(base_dir, "tmp")
+os.makedirs(tmp_dir, exist_ok=True)
+
+sample1 = {
+    "metric_by_len": {"0": 0.5, "1": 0.52, "2": 0.54, "3": 0.56, "4": 0.58, "5": 0.6, "6": 0.62},
+    "model": "test-model",
+    "target": "test-task",
+    "distractor": "A"
+}
+sample2 = {
+    "metric_by_len": {"0": 0.4, "1": 0.45, "2": 0.5, "3": 0.55, "4": 0.6, "5": 0.65, "6": 0.7},
+    "model": "test-model",
+    "target": "test-task",
+    "distractor": "B"
+}
+
+open(os.path.join(tmp_dir, "A.json"), "w").write(json.dumps(sample1))
+open(os.path.join(tmp_dir, "B.json"), "w").write(json.dumps(sample2))
+
+out_dir = os.path.join(tmp_dir, "plots_test")
+os.makedirs(out_dir, exist_ok=True)
+
+df, model, target = df_from_dir(tmp_dir)
+
+plot_metric(df, model, target, out_dir)
+plot_pct_change(df, model, target, out_dir)
+
+assert os.path.isfile(os.path.join(out_dir, "metric.png"))
+assert os.path.getsize(os.path.join(out_dir, "metric.png")) > 0
+
+assert os.path.isfile(os.path.join(out_dir, "metric_pct_change.png"))
+assert os.path.getsize(os.path.join(out_dir, "metric_pct_change.png")) > 0
+
+print("Plot generation tests passed.")

@@ -2,4 +2,5 @@
 __pycache__/
 results/
 plots/
-*_debug.json
+slurm_
+tmp/
