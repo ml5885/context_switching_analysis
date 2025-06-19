@@ -34,7 +34,7 @@ def plot_metric(data, out_dir):
 
     fname = os.path.join(out_dir, "metric.png")
     plt.savefig(fname, bbox_inches="tight")
-    plt.close() # FIX: Close the figure to free up memory
+    plt.close()
     print("metric plot saved to", fname)
 
 def plot_cos(data, out_dir):
@@ -51,7 +51,7 @@ def plot_cos(data, out_dir):
 
     fname = os.path.join(out_dir, "cosine.png")
     plt.savefig(fname, bbox_inches="tight")
-    plt.close() # FIX: Close the figure to free up memory
+    plt.close()
     print("cosine plot saved to", fname)
 
 def main():

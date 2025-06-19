@@ -58,36 +58,12 @@ def greedy_generate(model, prompt, max_new_tokens=32):
             break
     return model.to_string(toks[0])
 
-def sample_examples(name, n, max_hist_len, is_control):
-    num_to_sample = n + max_hist_len if is_control else n
-    
-    ds = load_split(name, streaming=True)
-    selected = []
-    
-    print(f"Sampling {num_to_sample} examples for {name}...")
-    scan_limit = num_to_sample * 10
-    pbar = tqdm(enumerate(ds), desc=f"Scanning {name}", total=scan_limit)
-    
-    for i, ex in pbar:
-        if len(selected) < num_to_sample:
-            selected.append(ex)
-        else:
-            j = random.randint(0, i)
-            if j < num_to_sample:
-                selected[j] = ex
-        if i >= scan_limit:
-            pbar.close()
-            break
+def sample_examples(name):
+    ds = load_split(name, streaming=False)
+    print(f"Loaded {len(ds)} examples from {name}.")
+    return list(ds)
 
-    if not pbar.disable:
-        pbar.close()
-
-    if len(selected) < num_to_sample:
-        print(f"Warning: Only found {len(selected)}/{num_to_sample} examples for {name}.")
-    
-    return selected
-
-def experiment(model_name, target, distractor, n, max_len, device):
+def experiment(model_name, target, distractor, max_len, device):
     device = pick_device(device)
     model = HookedTransformer.from_pretrained_no_processing(
         model_name,
@@ -98,8 +74,8 @@ def experiment(model_name, target, distractor, n, max_len, device):
     is_control = target == distractor
     tgt_cfg = dataset_config[target]
     
-    tgt_ds = sample_examples(target, n, max_len, is_control)
-    dis_ds = tgt_ds if is_control else sample_examples(distractor, n, max_len, False)
+    tgt_ds = sample_examples(target)
+    dis_ds = tgt_ds if is_control else sample_examples(distractor)
 
     metric_acc = tgt_cfg["metric"] == "accuracy"
     metric_rouge = tgt_cfg["metric"] == "rouge"
@@ -108,14 +84,16 @@ def experiment(model_name, target, distractor, n, max_len, device):
     metric_by_len, cos_by_len, dbg_top5 = {}, {}, {}
     all_debug_info = []
 
-    for h in tqdm(range(1, max_len + 1), desc="Testing History Lengths"):
+    n = len(tgt_ds)
+
+    for h in tqdm(range(max_len + 1), desc="Testing History Lengths"):
         preds, refs, sims = [], [], []
         top_counter = Counter()        
         hist_task = distractor 
         hist_ds = dis_ds
         
         for i in tqdm(range(n), desc=f"  - Hist({h}, {hist_task})", leave=False):
-            if i >= len(tgt_ds) or not hist_ds:
+            if not hist_ds:
                 continue
 
             turns = []
@@ -220,7 +198,6 @@ def main():
     ap.add_argument("--target", required=True)
     ap.add_argument("--distractor", required=True)
     ap.add_argument("--max_len", type=int, default=6)
-    ap.add_argument("--n", type=int, default=100)
     ap.add_argument("--device", default=None)
     ap.add_argument("--out_dir", default="results")
     args = ap.parse_args()
@@ -229,7 +206,6 @@ def main():
         args.model,
         args.target,
         args.distractor,
-        args.n,
         args.max_len,
         args.device,
     )

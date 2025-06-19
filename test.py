@@ -1,15 +1,19 @@
 from transformer_lens import HookedTransformer
-from data_utils import build_histories, load_split, build_prompt
+from data_utils import load_split, build_prompt, dataset_config
 
-hist = build_histories(max_len=4)
-print("total histories:", len(hist))
-for seq in hist:
-    print(seq)
+print("Testing data loading and prompt building for all configured datasets...")
+for name in dataset_config.keys():
+    print(f"\n--- Testing dataset: {name} ---")
+    ds = load_split(name, streaming=False)
+    sample = ds[0]
+    prompt, answer = build_prompt(name, sample)
+    print(f"Sample prompt snippet: {prompt}...")
+    print(f"Sample answer: {answer}")
 
-for name in ["mmlu", "rotten_tomatoes", "cnn_dailymail"]:
-    ds = load_split(name, limit=1)
-    prompt, answer = build_prompt(name, ds[0])
-    print(name, "prompt snippet:", prompt[:60].replace("\n", " "), "answer snippet:", answer[:40])
-
-model = HookedTransformer.from_pretrained("EleutherAI/pythia-70m")
-print("model loaded")
+print("\n--- Testing model loading ---")
+try:
+    model = HookedTransformer.from_pretrained("EleutherAI/pythia-70m", device="cpu")
+    print("Model 'EleutherAI/pythia-70m' loaded successfully.")
+    del model
+except Exception as e:
+    print(f"Failed to load model: {e}")

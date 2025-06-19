@@ -17,12 +17,12 @@ TASKS=(
 for MODEL in "${MODELS[@]}"; do
   for TARGET in "${TASKS[@]}"; do
     echo "=== RUNNING CONTROL: MODEL=$MODEL TARGET=$TARGET DISTRACTOR=$TARGET ==="
-    python experiment.py --model "$MODEL" --target "$TARGET" --distractor "$TARGET" --max_len 6 --n 50
+    python experiment.py --model "$MODEL" --target "$TARGET" --distractor "$TARGET" --max_len 6
 
     for DIST in "${TASKS[@]}"; do
       if [ "$TARGET" != "$DIST" ]; then
         echo "=== RUNNING CONTEXT-SWITCH: MODEL=$MODEL TARGET=$TARGET DISTRACTOR=$DIST ==="
-        python experiment.py --model "$MODEL" --target "$TARGET" --distractor "$DIST" --max_len 6 --n 50
+        python experiment.py --model "$MODEL" --target "$TARGET" --distractor "$DIST" --max_len 6
       fi
     done
   done
