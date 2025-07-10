@@ -45,16 +45,20 @@ def run_example(model, texts):
     return final_logits.cpu(), layer_sims.tolist()
 
 @torch.no_grad()
-def greedy_generate(model, prompts, max_new_tokens=32):
+def greedy_generate(model, prompts, max_new_tokens=512):
     toks = model.to_tokens(prompts, prepend_bos=True)
-    gen = model.model.generate(
-        toks,
-        max_new_tokens=max_new_tokens,
-        do_sample=False,
-        pad_token_id=model.tokenizer.pad_token_id
-    )
+    gen_kwargs = {
+        "max_new_tokens": max_new_tokens,
+        "do_sample": False,
+        "verbose": False,
+    }
+    if not model.tlens:
+        gen_kwargs["pad_token_id"] = model.tokenizer.pad_token_id
+
+    gen = model.model.generate(toks, **gen_kwargs)
     gen_ids = gen[:, toks.shape[1]:]
-    return [model.to_string(g) for g in gen_ids]
+    return [model.to_string(ids) for ids in gen_ids]
+
 
 def parse_task(task):
     """Parse a task string like 'dataset' or 'dataset/split'."""
