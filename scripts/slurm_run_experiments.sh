@@ -1,9 +1,9 @@
 #!/bin/bash
 
 #SBATCH --job-name=context_switching
-#SBATCH --output=/home/%u/logs/sbatch/context_switching_%j.out
-#SBATCH --error=/home/%u/logs/sbatch/context_switching_%j.err
-#SBATCH --time=3:00:00
+#SBATCH --output=/home/%u/logs/sbatch/context_switching_%A_%a.out
+#SBATCH --error=/home/%u/logs/sbatch/context_switching_%A_%a.err
+#SBATCH --time=2-0:00:00
 #SBATCH --gres=gpu:1
 #SBATCH --mem=128G
 #SBATCH --gres=gpu:1              
@@ -11,6 +11,7 @@
 #SBATCH --partition=preempt
 #SBATCH --mail-user=ml6@andrew.cmu.edu
 #SBATCH --mail-type=START,END,FAIL
+#SBATCH --array=0-17%8
 
 export HF_HOME=/data/user_data/ml6/.hf_cache
 export HF_HUB_CACHE=/data/hf_cache/hub
@@ -40,39 +41,31 @@ TASKS=(
     "tweetqa"
 )
 
-for MODEL_INFO in "${MODELS[@]}"; do
-    MODEL=$(echo "$MODEL_INFO" | cut -d':' -f1)
-    QUANTIZE_INFO=$(echo "$MODEL_INFO" | cut -d':' -f2)
-
-    QUANTIZE_FLAG=""
-    if [ "$QUANTIZE_INFO" == "quantize" ]; then
-        QUANTIZE_FLAG="--quantize"
-    fi
-
-    for TARGET in "${TASKS[@]}"; do
-        echo "=== RUNNING CONTROL: model=$MODEL target=$TARGET distractor=$TARGET ==="
-        python experiment.py \
-            --model "$MODEL" \
-            --target "$TARGET" \
-            --distractor "$TARGET" \
-            --max_len 6 \
-            $QUANTIZE_FLAG
-
-        for DIST in "${TASKS[@]}"; do
-            if [ "$TARGET" != "$DIST" ]; then
-                echo "=== RUNNING CONTEXT-SWITCH: model=$MODEL target=$TARGET distractor=$DIST ==="
-                python experiment.py \
-                    --model "$MODEL" \
-                    --target "$TARGET" \
-                    --distractor "$DIST" \
-                    --max_len 6 \
-                    $QUANTIZE_FLAG
-            fi
+ALL_JOBS=()
+for model_info in "${MODELS[@]}"; do
+    for target in "${TASKS[@]}"; do
+        for distractor in "${TASKS[@]}"; do
+            ALL_JOBS+=("$model_info;$target;$distractor")
         done
     done
 done
 
-echo "Running plot.py to aggregate results..."
-python plot.py --result results --out_dir plots
+JOB_CONFIG=${ALL_JOBS[$SLURM_ARRAY_TASK_ID]}
 
-echo "Done. All results are in results/ and plots/."
+IFS=';' read -r MODEL_INFO TARGET DISTRACTOR <<< "$JOB_CONFIG"
+
+MODEL=$(echo "$MODEL_INFO" | cut -d':' -f1)
+QUANTIZE_INFO=$(echo "$MODEL_INFO" | cut -d':' -f2)
+
+QUANTIZE_FLAG=""
+if [ "$QUANTIZE_INFO" == "quantize" ]; then
+    QUANTIZE_FLAG="--quantize"
+fi
+
+echo "=== Job $SLURM_ARRAY_TASK_ID: model=$MODEL target=$TARGET distractor=$DISTRACTOR quantize=$QUANTIZE_INFO ==="
+python experiment.py \
+    --model "$MODEL" \
+    --target "$TARGET" \
+    --distractor "$DISTRACTOR" \
+    --max_len 6 \
+    $QUANTIZE_FLAG

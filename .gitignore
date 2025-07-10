@@ -1,6 +1,7 @@
 .venv/
 __pycache__/
-results/
-plots/
+*out*/
+*plots*/
+*results*/
 tmp/
 scripts/*slurm*

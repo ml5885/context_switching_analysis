@@ -7,9 +7,9 @@ import evaluate
 import numpy as np
 import torch
 from tqdm import tqdm
-from transformer_lens import HookedTransformer
 
 from data_utils import load_split, build_prompt, dataset_config
+from model_wrapper import ModelWrapper
 
 def pick_device(pref):
     return pref or ("cuda" if torch.cuda.is_available() else "cpu")
@@ -18,42 +18,53 @@ def cosine(a, b):
     return torch.nn.functional.cosine_similarity(a, b, dim=-1)
 
 @torch.no_grad()
-def run_example(model, text):
-    toks = model.to_tokens(text, prepend_bos=True)
-    final_logits = model(toks)[:, -1, :].detach()
-    w_u = model.W_U
-    layer_sims = torch.empty(model.cfg.n_layers, device="cpu")
+def run_example(model, texts):
+    toks = model.to_tokens(texts, prepend_bos=True)
+    if model.tlens:
+        final_logits = model.model(toks)[:, -1, :].detach()
+        w_u = model.W_U
+        layer_sims = torch.empty(toks.shape[0], model.model.cfg.n_layers, device="cpu")
 
-    def make_hook(idx):
-        def _hook(resid_post, hook):
-            last_tok = resid_post[:, -1, :]
-            sim = cosine(last_tok @ w_u, final_logits)
-            layer_sims[idx] = sim.item()
-        return _hook
+        def make_hook(idx):
+            def _hook(resid_post, hook):
+                last_tok = resid_post[:, -1, :]
+                sim = cosine(last_tok @ w_u, final_logits)
+                layer_sims[:, idx] = sim.cpu()
 
-    hooks = [
-        (f"blocks.{i}.hook_resid_post", make_hook(i))
-        for i in range(model.cfg.n_layers)
-    ]
-    model.run_with_hooks(toks, fwd_hooks=hooks, return_type=None)
+            return _hook
+
+        hooks = [(f"blocks.{i}.hook_resid_post", make_hook(i)) for i in range(model.model.cfg.n_layers)]
+        model.model.run_with_hooks(toks, fwd_hooks=hooks, return_type=None)
+    else:
+        outputs = model.model(toks, output_hidden_states=True)
+        final_logits = outputs.logits[:, -1, :].detach()
+        w_u = model.W_U
+        h_states = outputs.hidden_states[1:]
+        sims = torch.stack([cosine(h[:, -1, :] @ w_u, final_logits) for h in h_states], dim=1)
+        layer_sims = sims.cpu()
     return final_logits.cpu(), layer_sims.tolist()
 
 @torch.no_grad()
-def greedy_generate(model, prompt, max_new_tokens=32):
-    toks = model.to_tokens(prompt, prepend_bos=True)
-    prompt_len = toks.shape[1]
-    for _ in range(max_new_tokens):
-        logits = model(toks)[:, -1, :]
-        next_id = torch.argmax(logits, dim=-1, keepdim=True)
-        toks = torch.cat([toks, next_id], dim=-1)
-        if next_id.item() == model.tokenizer.eos_token_id:
-            break
-    generated_toks = toks[:, prompt_len:]
-    return model.to_string(generated_toks[0])
+def greedy_generate(model, prompts, max_new_tokens=32):
+    toks = model.to_tokens(prompts, prepend_bos=True)
+    gen = model.model.generate(
+        toks,
+        max_new_tokens=max_new_tokens,
+        do_sample=False,
+        pad_token_id=model.tokenizer.pad_token_id
+    )
+    gen_ids = gen[:, toks.shape[1]:]
+    return [model.to_string(g) for g in gen_ids]
 
-def sample_examples(name):
-    ds = load_split(name, streaming=False)
-    print(f"Loaded {len(ds)} examples from {name}.")
+def parse_task(task):
+    """Parse a task string like 'dataset' or 'dataset/split'."""
+    if "/" in task:
+        dataset, split = task.split("/", 1)
+        return dataset, split
+    return task, None
+
+def sample_examples(name, split=None, debug=False):
+    ds = load_split(name, split=split, streaming=False, debug=debug)
     return list(ds)
 
 def build_history_text(task, samples, idx, length):
@@ -70,23 +81,17 @@ def build_history_text(task, samples, idx, length):
         turns.append(f"User: {prompt}\nAssistant:{full_answer}")
     return "\n\n".join(turns)
 
-def experiment(model_name, target, distractor, max_len, device, quantize=False):
+def experiment(model_name, target, distractor, max_len, device, quantize=False, debug=False, batch_size=8):
     device = pick_device(device)
-    if quantize:
-        model = HookedTransformer.from_pretrained_no_processing(
-            model_name,
-            device=device,
-            dtype=torch.bfloat16
-        )
-    else:
-        model = HookedTransformer.from_pretrained(
-            model_name,
-            device=device,
-        )
+    model = ModelWrapper(model_name, device=device, quantize=quantize)
 
-    tgt_cfg = dataset_config[target]
-    tgt_ds = sample_examples(target)
-    dis_ds = tgt_ds if target == distractor else sample_examples(distractor)
+    tgt_name, tgt_split = parse_task(target)
+    dis_name, dis_split = parse_task(distractor)
+
+    tgt_cfg = dataset_config[tgt_name]
+    tgt_ds = sample_examples(tgt_name, split=tgt_split, debug=debug)
+    dis_ds = tgt_ds if (tgt_name == dis_name and (tgt_split == dis_split or dis_split is None)) else sample_examples(dis_name, split=dis_split, debug=debug)
+
     metric_acc = tgt_cfg["metric"] == "accuracy"
     metric_rouge = tgt_cfg["metric"] == "rouge"
     rouge_eval = evaluate.load("rouge") if metric_rouge else None
@@ -94,61 +99,86 @@ def experiment(model_name, target, distractor, max_len, device, quantize=False):
     metric_by_len, cos_by_len, dbg_top5, all_debug_info = {}, {}, {}, []
     n = len(tgt_ds)
 
-    for h in tqdm(range(max_len + 1), desc="Testing History Lengths"):
-        preds, refs, sims = [], [], []
+    for h in range(max_len + 1):
+
+        preds, sims = [], []
         top_counter = Counter()
-        for i in tqdm(range(n), desc=f"Processing {target} examples with history length {h}"):
-            history_text = build_history_text(distractor, dis_ds, i, h)
-            final_p, gold = build_prompt(target, tgt_ds[i])
+
+        prompts = []
+        golds = []
+        for i in range(n):
+            history_text = build_history_text(dis_name, dis_ds, i, h)
+            final_p, gold = build_prompt(tgt_name, tgt_ds[i])
+            
+            # Create the conversation prompt
             assistant_prompt = "Assistant:"
             if tgt_cfg["answer_suffix"]:
                 assistant_prompt += " <Answer>"
-            conv = (
-                (history_text + "\n\n") if history_text else ""
-            ) + f"User: {final_p}\n{assistant_prompt}"
-            logits, cos_list = run_example(model, conv)
+            conv = (history_text + "\n\n" if history_text else "") + f"User: {final_p}\n{assistant_prompt}"
+            prompts.append(conv)
+            golds.append(gold)
+
+        refs = golds
+
+        for i in tqdm(range(0, n, batch_size), desc=f"{tgt_name}:{h}"):
+            batch_prompts = prompts[i:i+batch_size]
+            batch_golds = golds[i:i+batch_size]
+            
+            logits_batch, cos_list_batch = run_example(model, batch_prompts)
+            sims.extend(cos_list_batch)
+
+            # Get the model's prediction
             if metric_acc:
-                generated = greedy_generate(model, conv, max_new_tokens=10)
-                label = generated.strip()
-                suffix = tgt_cfg["answer_suffix"]
-                if suffix and suffix in label:
-                    label = label.split(suffix)[0]
-                preds.append(label)
-                refs.append(gold)
-                predicted_answer = label
+                max_new = 10
             else:
-                generated_text = greedy_generate(model, conv, 64)
-                preds.append(generated_text)
-                refs.append(gold)
-                predicted_answer = generated_text
-            sims.append(cos_list)
-            for tid in torch.topk(logits, 5, dim=-1).indices[0].tolist():
-                top_counter[tid] += 1
-            all_debug_info.append({
-                "prompt_text": conv,
-                "model_prediction": predicted_answer,
-                "expected_answer": gold,
-                "config": {
-                    "target_dataset": target,
-                    "distractor_dataset": distractor,
-                    "history_len": h,
-                    "history_content_task": distractor,
-                    "target_example_dataset_idx": i,
-                }
-            })
-            torch.cuda.empty_cache()
+                max_new = 64
+            
+            generated_batch = greedy_generate(model, batch_prompts, max_new)
+
+            for j, generated in enumerate(generated_batch):
+                if metric_acc:
+                    label = generated.strip()
+                    suffix = tgt_cfg["answer_suffix"]
+                    if suffix and suffix in label:
+                        label = label.split(suffix)[0]
+                    preds.append(label)
+                    predicted_answer = label
+                else:
+                    preds.append(generated)
+                    predicted_answer = generated
+
+                for tid in torch.topk(logits_batch[j], 5, dim=-1).indices.tolist():
+                    top_counter[tid] += 1
+
+                all_debug_info.append({
+                    "prompt_text": batch_prompts[j],
+                    "model_prediction": predicted_answer,
+                    "expected_answer": batch_golds[j],
+                    "config": {
+                        "target_dataset": tgt_name,
+                        "distractor_dataset": dis_name,
+                        "history_len": h,
+                        "history_content_task": dis_name,
+                        "target_example_dataset_idx": i + j,
+                    }
+                })
+
         if not refs:
             continue
+        
+        # Compute metrics
         if metric_acc:
             metric_by_len[str(h)] = sum(p == r for p, r in zip(preds, refs)) / len(refs)
         else:
             rouge_res = rouge_eval.compute(predictions=preds, references=refs)
             rl = rouge_res["rougeL"]
             metric_by_len[str(h)] = rl["fmeasure"] if isinstance(rl, dict) else float(rl)
+
         cos_by_len[str(h)] = np.mean(sims, axis=0).tolist()
         dbg_top5[str(h)] = [
             (model.to_string(t).strip(), c) for t, c in top_counter.most_common(5)
         ]
+
     return metric_by_len, cos_by_len, tgt_cfg["metric"], dbg_top5, all_debug_info
 
 def save_results(model, target, distractor, metric_name, metric_by_len, cos_by_len, dbg, out_dir="results"):
@@ -185,8 +215,10 @@ def main():
     ap.add_argument("--device", default=None)
     ap.add_argument("--out_dir", default="results")
     ap.add_argument("--quantize", action="store_true")
+    ap.add_argument("--debug", action="store_true")
+    ap.add_argument("--batch_size", type=int, default=8)
     args = ap.parse_args()
-
+    
     metric_by_len, cos_by_len, metric_name, dbg, debug_log = experiment(
         args.model,
         args.target,
@@ -194,8 +226,9 @@ def main():
         args.max_len,
         args.device,
         args.quantize,
+        debug=args.debug,
+        batch_size=args.batch_size
     )
-
     save_results(
         args.model,
         args.target,
@@ -204,15 +237,14 @@ def main():
         metric_by_len,
         cos_by_len,
         dbg,
-        args.out_dir,
+        args.out_dir
     )
-    
     save_debug_log(
         args.model,
         args.target,
         args.distractor,
         debug_log,
-        args.out_dir,
+        args.out_dir
     )
 
 if __name__ == "__main__":
