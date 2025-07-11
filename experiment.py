@@ -20,28 +20,26 @@ def cosine(a, b):
 @torch.no_grad()
 def run_example(model, texts):
     toks = model.to_tokens(texts, prepend_bos=True)
-    if model.tlens:
-        final_logits = model.model(toks)[:, -1, :].detach()
-        w_u = model.W_U
-        layer_sims = torch.empty(toks.shape[0], model.model.cfg.n_layers, device="cpu")
 
-        def make_hook(idx):
-            def _hook(resid_post, hook):
-                last_tok = resid_post[:, -1, :]
-                sim = cosine(last_tok @ w_u, final_logits)
-                layer_sims[:, idx] = sim.cpu()
+    # 1) get final logits
+    final_logits = model.model(toks)[:, -1, :].detach()
 
-            return _hook
+    # 2) capture per-layer post-residual via transformer_lens hooks
+    w_u = model.W_U
+    batch_size = toks.shape[0]
+    num_layers = model.model.cfg.n_layers
+    layer_sims = torch.empty(batch_size, num_layers, device="cpu")
 
-        hooks = [(f"blocks.{i}.hook_resid_post", make_hook(i)) for i in range(model.model.cfg.n_layers)]
-        model.model.run_with_hooks(toks, fwd_hooks=hooks, return_type=None)
-    else:
-        outputs = model.model(toks, output_hidden_states=True)
-        final_logits = outputs.logits[:, -1, :].detach()
-        w_u = model.W_U
-        h_states = outputs.hidden_states[1:]
-        sims = torch.stack([cosine(h[:, -1, :] @ w_u, final_logits) for h in h_states], dim=1)
-        layer_sims = sims.cpu()
+    def make_hook(idx):
+        def hook(resid_post, hook):
+            last = resid_post[:, -1, :]
+            sim = cosine(last @ w_u, final_logits)
+            layer_sims[:, idx] = sim.cpu()
+        return hook
+
+    hooks = [(f"blocks.{i}.hook_resid_post", make_hook(i)) for i in range(num_layers)]
+    model.model.run_with_hooks(toks, fwd_hooks=hooks, return_type=None)
+
     return final_logits.cpu(), layer_sims.tolist()
 
 @torch.no_grad()

@@ -92,4 +92,3 @@ def build_prompt(dataset_name, sample):
         raise ValueError(f"Unknown dataset name: {dataset_name}")
 
     return prompt, answer
-    return prompt, answer
