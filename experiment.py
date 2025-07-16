@@ -20,9 +20,7 @@ def experiment(
     fp16: bool = False,
     no_cosine: bool = False,
 ):
-    model = ModelWrapper(model_name)
-    if fp16:
-        model.model.to(torch.float16)
+    model = ModelWrapper(model_name, fp16=fp16)
 
     tgt_ds_name, tgt_split = (target.split("/", 1) + [None])[:2]
     dis_ds_name, dis_split = (distractor.split("/", 1) + [None])[:2]
