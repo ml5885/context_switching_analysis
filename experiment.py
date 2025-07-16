@@ -2,14 +2,14 @@ import argparse
 import json
 import os
 from collections import Counter
-from typing import Dict, Any, List, Tuple
+from typing import Dict, List, Tuple
 
 import evaluate
 import numpy as np
 import torch
 from tqdm import tqdm
-
 from core import DATASET_CFG, ModelWrapper, build_history, build_prompt, greedy_generate, load_split, run_example
+import gc
 
 def experiment(
     model_name: str,
@@ -20,40 +20,32 @@ def experiment(
     batch_size: int = 8,
     fp16: bool = False,
     no_cosine: bool = False,
-) -> Tuple[Dict[str, float], Any, str, Dict[str, List[Tuple[str, int]]], List[dict]]:
+):
     model = ModelWrapper(model_name, fp16=fp16)
-
     tgt_ds_name, tgt_split = (target.split("/", 1) + [None])[:2]
     dis_ds_name, dis_split = (distractor.split("/", 1) + [None])[:2]
-
     tgt_cfg = DATASET_CFG[tgt_ds_name]
     tgt_ds = list(load_split(tgt_ds_name, tgt_split))
-    dis_ds = (
-        tgt_ds
-        if tgt_ds_name == dis_ds_name and (tgt_split == dis_split or dis_split is None)
-        else list(load_split(dis_ds_name, dis_split))
-    )
-
+    if tgt_ds_name == dis_ds_name and (tgt_split == dis_split or dis_split is None):
+        dis_ds = tgt_ds
+    else:
+        dis_ds = list(load_split(dis_ds_name, dis_split))
     metric_acc = tgt_cfg["metric"] == "accuracy"
     rouge_eval = evaluate.load("rouge") if tgt_cfg["metric"] == "rouge" else None
-
     if metric_acc:
         label_ids = [
             model.tokenizer.encode(tok, add_special_tokens=False)[0]
             for tok in tgt_cfg["answer_tokens"]
         ]
-
     prompt_cache: Dict[Tuple[int, int], str] = {}
     metric_by_len: Dict[str, float] = {}
-    cos_by_len: Dict[str, Any] = {}
+    cos_by_len: Dict[str, List[float]] = {}
     dbg_top5: Dict[str, List[Tuple[str, int]]] = {}
     debug_examples: List[dict] = []
     n = len(tgt_ds)
-
     for h in range(max_len + 1):
         preds, sims, top_counter = [], [], Counter()
         prompts, golds = [], []
-
         for i in range(n):
             if (h, i) not in prompt_cache:
                 history = build_history(dis_ds_name, dis_ds, i, h)
@@ -63,36 +55,41 @@ def experiment(
                 prompt_cache[(h, i)] = conv
             prompts.append(prompt_cache[(h, i)])
             golds.append(gold)
-
         for i in tqdm(range(0, n, batch_size), desc=f"{tgt_ds_name}:{h}"):
-            batch_prompts = prompts[i : i + batch_size]
-            batch_golds = golds[i : i + batch_size]
-
+            batch_prompts = prompts[i:i + batch_size]
+            batch_golds = golds[i:i + batch_size]
             if no_cosine:
                 toks = model.to_tokens(batch_prompts, prepend_bos=True)
-                logits_batch = model.model(input_ids=toks)[:, -1, :].detach().cpu()
-                cos_list_batch = None
+                logits_batch = model.model(toks).logits[:, -1, :].detach().cpu()
+                cos_list_batch = [[0.0] * model.num_layers for _ in batch_prompts]
             else:
                 logits_batch, cos_list_batch = run_example(model, batch_prompts)
-
-            if cos_list_batch is not None:
-                sims.extend(cos_list_batch)
-
+            sims.extend(cos_list_batch)
             if metric_acc:
                 answer_logits = logits_batch[:, label_ids]
                 choice = answer_logits.argmax(dim=-1)
                 for j, cidx in enumerate(choice.tolist()):
-                    preds.append(tgt_cfg["labels"][cidx])
+                    label = tgt_cfg["labels"][cidx]
+                    preds.append(label)
                     for tid in torch.topk(logits_batch[j], 5).indices.tolist():
                         top_counter[tid] += 1
                     debug_examples.append({
                         "prompt_text": batch_prompts[j],
-                        "model_prediction": tgt_cfg["labels"][cidx],
+                        "model_prediction": label,
                         "expected_answer": batch_golds[j],
-                        "config": {"history_len": h, "target_idx": i + j},
+                        "config": {
+                            "target_dataset": tgt_ds_name,
+                            "distractor_dataset": dis_ds_name,
+                            "history_len": h,
+                            "target_idx": i + j,
+                        },
                     })
             else:
-                gen_batch = greedy_generate(model, batch_prompts, max_new_tokens=32)
+                gen_batch = greedy_generate(
+                    model,
+                    batch_prompts,
+                    max_new_tokens=32,
+                )
                 for j, generated in enumerate(gen_batch):
                     label = generated.strip()
                     preds.append(label)
@@ -102,29 +99,25 @@ def experiment(
                         "prompt_text": batch_prompts[j],
                         "model_prediction": label,
                         "expected_answer": batch_golds[j],
-                        "config": {"history_len": h, "target_idx": i + j},
+                        "config": {
+                            "target_dataset": tgt_ds_name,
+                            "distractor_dataset": dis_ds_name,
+                            "history_len": h,
+                            "target_idx": i + j,
+                        },
                     })
-
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
-                import gc
                 gc.collect()
-
-        metric_by_len[str(h)] = (
-            sum(p == r for p, r in zip(preds, golds)) / n
-            if metric_acc
-            else rouge_eval.compute(predictions=preds, references=golds)["rougeL"]["fmeasure"]
-        )
-
-        if no_cosine:
-            cos_by_len[str(h)] = None
+        if metric_acc:
+            metric_by_len[str(h)] = sum(p == r for p, r in zip(preds, golds)) / n
         else:
-            cos_by_len[str(h)] = np.mean(sims, axis=0).tolist()
-
+            rl = rouge_eval.compute(predictions=preds, references=golds)["rougeL"]
+            metric_by_len[str(h)] = rl["fmeasure"] if isinstance(rl, dict) else float(rl)
+        cos_by_len[str(h)] = np.mean(sims, axis=0).tolist()
         dbg_top5[str(h)] = [
             (model.to_string(tid).strip(), cnt) for tid, cnt in top_counter.most_common(5)
         ]
-
     return metric_by_len, cos_by_len, tgt_cfg["metric"], dbg_top5, debug_examples
 
 def _safe_json_dump(obj: dict, path: str):
@@ -138,11 +131,11 @@ def save_results(
     distractor: str,
     metric_name: str,
     metric_by_len: Dict[str, float],
-    cos_by_len: Dict[str, Any],
+    cos_by_len: Dict[str, List[float]],
     dbg: Dict[str, List[Tuple[str, int]]],
     out_dir: str,
 ):
-    fname = f"{model.replace('/', '@')}__{target}_vs_{distractor}.json"
+    fname = f"{model.replace('/','@')}__{target}_vs_{distractor}.json"
     _safe_json_dump(
         {
             "model": model,
@@ -156,10 +149,8 @@ def save_results(
         os.path.join(out_dir, fname),
     )
 
-def save_debug_log(
-    model: str, target: str, distractor: str, examples: List[dict], out_dir: str
-):
-    fname = f"{model.replace('/', '@')}__{target}_vs_{distractor}_debug.json"
+def save_debug_log(model: str, target: str, distractor: str, examples: List[dict], out_dir: str):
+    fname = f"{model.replace('/','@')}__{target}_vs_{distractor}_debug.json"
     _safe_json_dump(
         {
             "model": model,
@@ -181,7 +172,6 @@ def main():
     ap.add_argument("--fp16", action="store_true")
     ap.add_argument("--no_cosine", action="store_true")
     args = ap.parse_args()
-
     metrics, cosines, metric_name, dbg, debug_log = experiment(
         args.model,
         args.target,

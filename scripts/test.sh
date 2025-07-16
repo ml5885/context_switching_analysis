@@ -8,7 +8,7 @@
 set -euo pipefail
 
 MODEL="Qwen/Qwen2.5-0.5B"
-MAX_LEN=2
+MAX_LEN=1
 OUT_DIR="test_results"
 BATCH_SIZE=1
 TASKS=(
