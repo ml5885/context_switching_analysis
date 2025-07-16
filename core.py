@@ -95,10 +95,15 @@ def build_prompt(dataset_name: str, sample: Dict[str, Any]) -> Tuple[str, str]:
     return prompt, answer
 
 class ModelWrapper:
-    def __init__(self, name: str):
+    def __init__(self, name: str, fp16: bool = False):
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         if self.device == "cuda":
-            self.model = HookedTransformer.from_pretrained(name, device_map="auto")
+            self.model = HookedTransformer.from_pretrained(
+                name,
+                device_map="auto",
+                torch_dtype=torch.float16,
+                low_cpu_mem_usage=True
+            )
         else:
             self.model = HookedTransformer.from_pretrained(name, device="cpu")
         self.tokenizer = self.model.tokenizer
