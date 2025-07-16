@@ -2,192 +2,154 @@ import argparse
 import json
 import os
 from collections import Counter
+from typing import Dict, List, Tuple
 
 import evaluate
 import numpy as np
 import torch
 from tqdm import tqdm
+from core import DATASET_CFG, ModelWrapper, build_history, build_prompt, greedy_generate, load_split, run_example
 
-from data_utils import load_split, build_prompt, dataset_config
-from model_wrapper import ModelWrapper
+def experiment(
+    model_name: str,
+    target: str,
+    distractor: str,
+    max_len: int,
+    *,
+    batch_size: int = 8,
+    fp16: bool = False,
+    no_cosine: bool = False,
+):
+    model = ModelWrapper(model_name)
+    if fp16:
+        model.model.to(torch.float16)
 
-def pick_device(pref):
-    return pref or ("cuda" if torch.cuda.is_available() else "cpu")
+    tgt_ds_name, tgt_split = (target.split("/", 1) + [None])[:2]
+    dis_ds_name, dis_split = (distractor.split("/", 1) + [None])[:2]
 
-def cosine(a, b):
-    return torch.nn.functional.cosine_similarity(a, b, dim=-1)
-
-@torch.no_grad()
-def run_example(model, texts):
-    toks = model.to_tokens(texts, prepend_bos=True)
-
-    # 1) get final logits
-    final_logits = model.model(toks)[:, -1, :].detach()
-
-    # 2) capture per-layer post-residual via transformer_lens hooks
-    w_u = model.W_U
-    batch_size = toks.shape[0]
-    num_layers = model.model.cfg.n_layers
-    layer_sims = torch.empty(batch_size, num_layers, device="cpu")
-
-    def make_hook(idx):
-        def hook(resid_post, hook):
-            last = resid_post[:, -1, :]
-            sim = cosine(last @ w_u, final_logits)
-            layer_sims[:, idx] = sim.cpu()
-        return hook
-
-    hooks = [(f"blocks.{i}.hook_resid_post", make_hook(i)) for i in range(num_layers)]
-    model.model.run_with_hooks(toks, fwd_hooks=hooks, return_type=None)
-
-    return final_logits.cpu(), layer_sims.tolist()
-
-@torch.no_grad()
-def greedy_generate(model, prompts, max_new_tokens=512):
-    toks = model.to_tokens(prompts, prepend_bos=True)
-    gen_kwargs = {
-        "max_new_tokens": max_new_tokens,
-        "do_sample": False,
-        "verbose": False,
-    }
-    if not model.tlens:
-        gen_kwargs["pad_token_id"] = model.tokenizer.pad_token_id
-
-    gen = model.model.generate(toks, **gen_kwargs)
-    gen_ids = gen[:, toks.shape[1]:]
-    return [model.to_string(ids) for ids in gen_ids]
-
-
-def parse_task(task):
-    """Parse a task string like 'dataset' or 'dataset/split'."""
-    if "/" in task:
-        dataset, split = task.split("/", 1)
-        return dataset, split
-    return task, None
-
-def sample_examples(name, split=None, debug=False):
-    ds = load_split(name, split=split, streaming=False, debug=debug)
-    return list(ds)
-
-def build_history_text(task, samples, idx, length):
-    turns = []
-    cfg = dataset_config[task]
-    for j in range(length):
-        sample = samples[(idx + j + 1) % len(samples)]
-        prompt, answer = build_prompt(task, sample)
-        suffix = cfg["answer_suffix"]
-        if suffix:
-            full_answer = f" <Answer>{answer}{suffix}"
-        else:
-            full_answer = f" {answer}"
-        turns.append(f"User: {prompt}\nAssistant:{full_answer}")
-    return "\n\n".join(turns)
-
-def experiment(model_name, target, distractor, max_len, device, quantize=False, debug=False, batch_size=8):
-    device = pick_device(device)
-    model = ModelWrapper(model_name, device=device, quantize=quantize)
-
-    tgt_name, tgt_split = parse_task(target)
-    dis_name, dis_split = parse_task(distractor)
-
-    tgt_cfg = dataset_config[tgt_name]
-    tgt_ds = sample_examples(tgt_name, split=tgt_split, debug=debug)
-    dis_ds = tgt_ds if (tgt_name == dis_name and (tgt_split == dis_split or dis_split is None)) else sample_examples(dis_name, split=dis_split, debug=debug)
+    tgt_cfg = DATASET_CFG[tgt_ds_name]
+    tgt_ds = list(load_split(tgt_ds_name, tgt_split))
+    dis_ds = (
+        tgt_ds
+        if tgt_ds_name == dis_ds_name and (tgt_split == dis_split or dis_split is None)
+        else list(load_split(dis_ds_name, dis_split))
+    )
 
     metric_acc = tgt_cfg["metric"] == "accuracy"
-    metric_rouge = tgt_cfg["metric"] == "rouge"
-    rouge_eval = evaluate.load("rouge") if metric_rouge else None
+    rouge_eval = evaluate.load("rouge") if tgt_cfg["metric"] == "rouge" else None
 
-    metric_by_len, cos_by_len, dbg_top5, all_debug_info = {}, {}, {}, []
+    if metric_acc:
+        label_ids = [
+            model.tokenizer.encode(tok, add_special_tokens=False)[0]
+            for tok in tgt_cfg["answer_tokens"]
+        ]
+
+    prompt_cache: Dict[Tuple[int,int], str] = {}
+    metric_by_len: Dict[str, float] = {}
+    cos_by_len: Dict[str, List[float]] = {}
+    dbg_top5: Dict[str, List[Tuple[str, int]]] = {}
+    debug_examples: List[dict] = []
     n = len(tgt_ds)
 
     for h in range(max_len + 1):
-
-        preds, sims = [], []
-        top_counter = Counter()
-
-        prompts = []
-        golds = []
+        preds, sims, top_counter = [], [], Counter()
+        prompts, golds = [], []
+        
         for i in range(n):
-            history_text = build_history_text(dis_name, dis_ds, i, h)
-            final_p, gold = build_prompt(tgt_name, tgt_ds[i])
-            
-            # Create the conversation prompt
-            assistant_prompt = "Assistant:"
-            if tgt_cfg["answer_suffix"]:
-                assistant_prompt += " <Answer>"
-            conv = (history_text + "\n\n" if history_text else "") + f"User: {final_p}\n{assistant_prompt}"
-            prompts.append(conv)
+            if (h, i) not in prompt_cache:
+                history = build_history(dis_ds_name, dis_ds, i, h)
+                final_p, gold = build_prompt(tgt_ds_name, tgt_ds[i])
+                tag = "Assistant:" + (" <Answer>" if tgt_cfg["answer_suffix"] else "")
+                conv = (history + "\n\n" if history else "") + f"User: {final_p}\n{tag}"
+                prompt_cache[(h, i)] = conv
+            prompts.append(prompt_cache[(h, i)])
             golds.append(gold)
-
-        refs = golds
-
-        for i in tqdm(range(0, n, batch_size), desc=f"{tgt_name}:{h}"):
-            batch_prompts = prompts[i:i+batch_size]
-            batch_golds = golds[i:i+batch_size]
             
-            logits_batch, cos_list_batch = run_example(model, batch_prompts)
+        for i in tqdm(range(0, n, batch_size), desc=f"{tgt_ds_name}:{h}"):
+            batch_prompts = prompts[i:i+batch_size]
+            batch_golds   = golds[i:i+batch_size]
+            if no_cosine:
+                toks = model.to_tokens(batch_prompts, prepend_bos=True)
+                logits_batch = model.model(toks)[:, -1, :].detach().cpu()
+                cos_list_batch = [[0.0]*model.model.cfg.n_layers for _ in batch_prompts]
+            else:
+                logits_batch, cos_list_batch = run_example(model, batch_prompts)
             sims.extend(cos_list_batch)
 
-            # Get the model's prediction
             if metric_acc:
-                max_new = 10
-            else:
-                max_new = 64
-            
-            generated_batch = greedy_generate(model, batch_prompts, max_new)
-
-            for j, generated in enumerate(generated_batch):
-                if metric_acc:
-                    label = generated.strip()
-                    suffix = tgt_cfg["answer_suffix"]
-                    if suffix and suffix in label:
-                        label = label.split(suffix)[0]
+                # pick best known answer directly
+                answer_logits = logits_batch[:, label_ids]               # [B, num_labels]
+                choice = answer_logits.argmax(dim=-1)                    # [B]
+                for j, cidx in enumerate(choice.tolist()):
+                    label = tgt_cfg["labels"][cidx]
                     preds.append(label)
-                    predicted_answer = label
-                else:
-                    preds.append(generated)
-                    predicted_answer = generated
+                    for tid in torch.topk(logits_batch[j], 5).indices.tolist():
+                        top_counter[tid] += 1
+                    debug_examples.append({
+                        "prompt_text": batch_prompts[j],
+                        "model_prediction": label,
+                        "expected_answer": batch_golds[j],
+                        "config": {
+                            "target_dataset": tgt_ds_name,
+                            "distractor_dataset": dis_ds_name,
+                            "history_len": h,
+                            "target_idx": i + j,
+                        },
+                    })
+            else:
+                gen_batch = greedy_generate(
+                    model,
+                    batch_prompts,
+                    max_new_tokens=32,
+                )
+                for j, generated in enumerate(gen_batch):
+                    label = generated.strip()
+                    preds.append(label)
+                    for tid in torch.topk(logits_batch[j], 5).indices.tolist():
+                        top_counter[tid] += 1
+                    debug_examples.append({
+                        "prompt_text": batch_prompts[j],
+                        "model_prediction": label,
+                        "expected_answer": batch_golds[j],
+                        "config": {
+                            "target_dataset": tgt_ds_name,
+                            "distractor_dataset": dis_ds_name,
+                            "history_len": h,
+                            "target_idx": i + j,
+                        },
+                    })
 
-                for tid in torch.topk(logits_batch[j], 5, dim=-1).indices.tolist():
-                    top_counter[tid] += 1
-
-                all_debug_info.append({
-                    "prompt_text": batch_prompts[j],
-                    "model_prediction": predicted_answer,
-                    "expected_answer": batch_golds[j],
-                    "config": {
-                        "target_dataset": tgt_name,
-                        "distractor_dataset": dis_name,
-                        "history_len": h,
-                        "history_content_task": dis_name,
-                        "target_example_dataset_idx": i + j,
-                    }
-                })
-
-        if not refs:
-            continue
-        
-        # Compute metrics
         if metric_acc:
-            metric_by_len[str(h)] = sum(p == r for p, r in zip(preds, refs)) / len(refs)
+            metric_by_len[str(h)] = sum(p == r for p, r in zip(preds, golds)) / n
         else:
-            rouge_res = rouge_eval.compute(predictions=preds, references=refs)
-            rl = rouge_res["rougeL"]
+            rl = rouge_eval.compute(predictions=preds, references=golds)["rougeL"]
             metric_by_len[str(h)] = rl["fmeasure"] if isinstance(rl, dict) else float(rl)
 
         cos_by_len[str(h)] = np.mean(sims, axis=0).tolist()
         dbg_top5[str(h)] = [
-            (model.to_string(t).strip(), c) for t, c in top_counter.most_common(5)
+            (model.to_string(tid).strip(), cnt) for tid, cnt in top_counter.most_common(5)
         ]
 
-    return metric_by_len, cos_by_len, tgt_cfg["metric"], dbg_top5, all_debug_info
+    return metric_by_len, cos_by_len, tgt_cfg["metric"], dbg_top5, debug_examples
 
-def save_results(model, target, distractor, metric_name, metric_by_len, cos_by_len, dbg, out_dir="results"):
-    os.makedirs(out_dir, exist_ok=True)
+def _safe_json_dump(obj: dict, path: str):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w") as f:
+        json.dump(obj, f, indent=2)
+
+def save_results(
+    model: str,
+    target: str,
+    distractor: str,
+    metric_name: str,
+    metric_by_len: Dict[str, float],
+    cos_by_len: Dict[str, List[float]],
+    dbg: Dict[str, List[Tuple[str, int]]],
+    out_dir: str,
+):
     fname = f"{model.replace('/','@')}__{target}_vs_{distractor}.json"
-    with open(os.path.join(out_dir, fname), "w") as f:
-        json.dump({
+    _safe_json_dump(
+        {
             "model": model,
             "target": target,
             "distractor": distractor,
@@ -195,18 +157,21 @@ def save_results(model, target, distractor, metric_name, metric_by_len, cos_by_l
             "metric_by_len": metric_by_len,
             "cos_by_len": cos_by_len,
             "debug_top5_by_len": dbg,
-        }, f, indent=2)
+        },
+        os.path.join(out_dir, fname),
+    )
 
-def save_debug_log(model, target, distractor, debug_info, out_dir="results"):
-    os.makedirs(out_dir, exist_ok=True)
+def save_debug_log(model: str, target: str, distractor: str, examples: List[dict], out_dir: str):
     fname = f"{model.replace('/','@')}__{target}_vs_{distractor}_debug.json"
-    with open(os.path.join(out_dir, fname), "w") as f:
-        json.dump({
+    _safe_json_dump(
+        {
             "model": model,
             "target_task": target,
             "distractor_task": distractor,
-            "debug_examples": debug_info,
-        }, f, indent=2)
+            "debug_examples": examples,
+        },
+        os.path.join(out_dir, fname),
+    )
 
 def main():
     ap = argparse.ArgumentParser()
@@ -214,40 +179,23 @@ def main():
     ap.add_argument("--target", required=True)
     ap.add_argument("--distractor", required=True)
     ap.add_argument("--max_len", type=int, default=6)
-    ap.add_argument("--device", default=None)
     ap.add_argument("--out_dir", default="results")
-    ap.add_argument("--quantize", action="store_true")
-    ap.add_argument("--debug", action="store_true")
     ap.add_argument("--batch_size", type=int, default=8)
+    ap.add_argument("--fp16", action="store_true")
+    ap.add_argument("--no_cosine", action="store_true")
     args = ap.parse_args()
-    
-    metric_by_len, cos_by_len, metric_name, dbg, debug_log = experiment(
+
+    metrics, cosines, metric_name, dbg, debug_log = experiment(
         args.model,
         args.target,
         args.distractor,
         args.max_len,
-        args.device,
-        args.quantize,
-        debug=args.debug,
-        batch_size=args.batch_size
+        batch_size=args.batch_size,
+        fp16=args.fp16,
+        no_cosine=args.no_cosine,
     )
-    save_results(
-        args.model,
-        args.target,
-        args.distractor,
-        metric_name,
-        metric_by_len,
-        cos_by_len,
-        dbg,
-        args.out_dir
-    )
-    save_debug_log(
-        args.model,
-        args.target,
-        args.distractor,
-        debug_log,
-        args.out_dir
-    )
+    save_results(args.model, args.target, args.distractor, metric_name, metrics, cosines, dbg, args.out_dir)
+    save_debug_log(args.model, args.target, args.distractor, debug_log, args.out_dir)
 
 if __name__ == "__main__":
     main()
