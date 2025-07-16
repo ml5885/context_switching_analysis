@@ -116,6 +116,11 @@ def experiment(
                             "target_idx": i + j,
                         },
                     })
+            
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            import gc
+            gc.collect()
 
         if metric_acc:
             metric_by_len[str(h)] = sum(p == r for p, r in zip(preds, golds)) / n
