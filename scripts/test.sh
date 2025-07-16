@@ -10,7 +10,7 @@ set -euo pipefail
 MODEL="Qwen/Qwen2.5-0.5B"
 MAX_LEN=2
 OUT_DIR="test_results"
-BATCH_SIZE=32
+BATCH_SIZE=1
 TASKS=(
   "mmlu/validation"
   "rotten_tomatoes/validation"
@@ -28,7 +28,7 @@ for target in "${TASKS[@]}"; do
       --distractor "${distractor}" \
       --max_len "${MAX_LEN}" \
       --batch_size "${BATCH_SIZE}" \
-    #   --fp16 \
+      --fp16 \
       --no_cosine \
       --out_dir "${OUT_DIR}"
   done

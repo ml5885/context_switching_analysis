@@ -3,7 +3,7 @@ from typing import Any, Dict, List, Sequence, Tuple
 
 import torch
 from datasets import load_dataset
-from transformer_lens import HookedTransformer
+from transformers import AutoModelForCausalLM, AutoTokenizer
 
 DATASET_CFG: Dict[str, Dict[str, Any]] = {
     "mmlu": {
@@ -97,77 +97,33 @@ def build_prompt(dataset_name: str, sample: Dict[str, Any]) -> Tuple[str, str]:
 class ModelWrapper:
     def __init__(self, name: str, fp16: bool = False):
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
-        if self.device == "cuda" and fp16:
-            self.model = HookedTransformer.from_pretrained(
-                name,
-                device_map="auto",
-                torch_dtype=torch.float16,
-                low_cpu_mem_usage=True
-            )
-        elif self.device == "cuda":
-            self.model = HookedTransformer.from_pretrained(name, device_map="auto")
-        else:
-            self.model = HookedTransformer.from_pretrained(name, device="cpu")
-        self.tokenizer = self.model.tokenizer
+        dtype = torch.float16 if self.device == "cuda" and fp16 else torch.float32
 
-    def to_tokens(self, text: Sequence[str] | str, *, prepend_bos: bool = False):
-        return self.model.to_tokens(
-            text, prepend_bos=prepend_bos, move_to_device=True
+        self.model = AutoModelForCausalLM.from_pretrained(
+            name,
+            torch_dtype=dtype,
+            device_map="auto" if self.device == "cuda" else None,
+            low_cpu_mem_usage=True,
+            output_hidden_states=True,
         )
+        self.tokenizer = AutoTokenizer.from_pretrained(name)
+        self.model.to(self.device)
+
+    def to_tokens(self, text: Sequence[str] | str, *, prepend_bos: bool = False) -> torch.Tensor:
+        enc = self.tokenizer(
+            list(text) if isinstance(text, (list, tuple)) else [text],
+            return_tensors="pt",
+            add_special_tokens=not prepend_bos,
+            padding=True,
+        )
+        return enc.input_ids.to(self.device)
 
     def to_string(self, ids: torch.Tensor) -> str:
-        return self.model.to_string(ids)
+        return self.tokenizer.decode(ids, skip_special_tokens=True)
 
     @property
-    def W_U(self) -> torch.Tensor:
-        return self.model.W_U
+    def lm_head_weight(self) -> torch.Tensor:
+        return self.model.lm_head.weight
 
 def cosine(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
     return torch.nn.functional.cosine_similarity(a, b, dim=-1)
-
-@torch.no_grad()
-def run_example(model: ModelWrapper, texts: List[str]) -> Tuple[torch.Tensor, List[List[float]]]:
-    toks = model.to_tokens(texts, prepend_bos=True)
-    final_logits = model.model(toks)[:, -1, :].detach()
-
-    w_u = model.W_U
-    num_layers = model.model.cfg.n_layers
-    sims = torch.empty(len(texts), num_layers, device="cpu")
-
-    def _hook(layer_idx: int):
-        def record(resid_post, hook):
-            last = resid_post[:, -1, :]
-            sims[:, layer_idx] = cosine(last @ w_u, final_logits).cpu()
-
-        return record
-
-    hooks = [(f"blocks.{i}.hook_resid_post", _hook(i)) for i in range(num_layers)]
-    model.model.run_with_hooks(toks, fwd_hooks=hooks, return_type=None)
-    return final_logits.cpu(), sims.tolist()
-
-@torch.no_grad()
-def greedy_generate(model: ModelWrapper, prompts: List[str], *, max_new_tokens: int = 64) -> List[str]:
-    toks = model.to_tokens(prompts, prepend_bos=True)
-
-    gen_kwargs = dict(
-        max_new_tokens=max_new_tokens,
-        do_sample=False,
-        verbose=False,
-    )
-
-    gen = model.model.generate(toks, **gen_kwargs)
-    gen_ids = gen[:, toks.shape[1]:]
-    return [model.to_string(ids) for ids in gen_ids]
-
-def build_history(
-    task: str, samples: Sequence[Dict[str, Any]], idx: int, history_len: int
-) -> str:
-    turns: List[str] = []
-    cfg = DATASET_CFG[task]
-    for j in range(history_len):
-        sample = samples[(idx + j + 1) % len(samples)]
-        prompt, answer = build_prompt(task, sample)
-        suffix = cfg["answer_suffix"]
-        answer_text = f" <Answer>{answer}{suffix}" if suffix else f" {answer}"
-        turns.append(f"User: {prompt}\nAssistant:{answer_text}")
-    return "\n\n".join(turns)
