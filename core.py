@@ -1,11 +1,10 @@
 from collections import Counter
-from typing import Any, Dict, List, Sequence, Tuple
 
 import torch
 from datasets import load_dataset
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-DATASET_CFG: Dict[str, Dict[str, Any]] = {
+DATASET_CFG = {
     "mmlu": {
         "hf_name": "cais/mmlu",
         "subset": "all",
@@ -53,12 +52,7 @@ DATASET_CFG: Dict[str, Dict[str, Any]] = {
     },
 }
 
-def load_split(
-    name: str,
-    split: str | None = None,
-    *,
-    streaming: bool = False
-) -> Any:
+def load_split(name, split=None, *, streaming=False):
     cfg = DATASET_CFG[name]
     split_to_use = split or cfg["split"]
     return load_dataset(
@@ -69,10 +63,7 @@ def load_split(
         download_mode="force_redownload",
     )
 
-def build_prompt(
-    dataset_name: str,
-    sample: Dict[str, Any]
-) -> Tuple[str, str]:
+def build_prompt(dataset_name, sample):
     cfg = DATASET_CFG[dataset_name]
 
     if dataset_name == "mmlu":
@@ -105,11 +96,7 @@ def build_prompt(
     return prompt, answer
 
 class ModelWrapper:
-    def __init__(
-        self,
-        name: str,
-        fp16: bool = False
-    ):
+    def __init__(self, name, fp16=False):
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         dtype = torch.float16 if fp16 and self.device == "cuda" else torch.float32
         self.tokenizer = AutoTokenizer.from_pretrained(name)
@@ -121,41 +108,27 @@ class ModelWrapper:
         ).to(self.device)
         self.num_layers = self.model.config.num_hidden_layers
 
-    def to_tokens(
-        self,
-        text: Sequence[str] | str,
-        *,
-        prepend_bos: bool = False
-    ):
+    def to_tokens(self, text, *, prepend_bos=False):
         return self.tokenizer(
             text,
             return_tensors="pt",
             padding=True,
-            truncation=True,
+            truncation=False,
             add_special_tokens=not prepend_bos,
         ).input_ids.to(self.device)
 
-    def to_string(
-        self,
-        ids: torch.Tensor
-    ) -> str:
+    def to_string(self, ids):
         return self.tokenizer.decode(ids, skip_special_tokens=True)
 
     @property
-    def W_U(self) -> torch.Tensor:
+    def W_U(self):
         return self.model.get_output_embeddings().weight
 
-def cosine(
-    a: torch.Tensor,
-    b: torch.Tensor
-) -> torch.Tensor:
+def cosine(a, b):
     return torch.nn.functional.cosine_similarity(a, b, dim=-1)
 
 @torch.no_grad()
-def run_example(
-    model: ModelWrapper,
-    texts: List[str]
-) -> Tuple[torch.Tensor, List[List[float]]]:
+def run_example(model, texts):
     toks = model.to_tokens(texts, prepend_bos=True)
     output = model.model(toks)
     final_logits = output.logits[:, -1, :].detach()
@@ -180,12 +153,7 @@ def run_example(
     return final_logits.cpu(), sims.tolist()
 
 @torch.no_grad()
-def greedy_generate(
-    model: ModelWrapper,
-    prompts: List[str],
-    *,
-    max_new_tokens: int = 64
-) -> List[str]:
+def greedy_generate(model, prompts, *, max_new_tokens=64):
     toks = model.to_tokens(prompts, prepend_bos=True)
     gen = model.model.generate(
         toks,
@@ -196,13 +164,8 @@ def greedy_generate(
     gen_ids = gen[:, toks.shape[1]:]
     return [model.to_string(ids) for ids in gen_ids]
 
-def build_history(
-    task: str,
-    samples: Sequence[Dict[str, Any]],
-    idx: int,
-    history_len: int
-) -> str:
-    turns: List[str] = []
+def build_history(task, samples, idx, history_len):
+    turns = []
     cfg = DATASET_CFG[task]
     for j in range(history_len):
         sample = samples[(idx + j + 1) % len(samples)]

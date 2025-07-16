@@ -2,7 +2,6 @@ import argparse
 import json
 import os
 from collections import Counter
-from typing import Dict, List, Tuple
 
 import evaluate
 import numpy as np
@@ -11,25 +10,23 @@ from tqdm import tqdm
 from core import DATASET_CFG, ModelWrapper, build_history, build_prompt, greedy_generate, load_split, run_example
 import gc
 
-def experiment(
-    model_name: str,
-    target: str,
-    distractor: str,
-    max_len: int,
-    *,
-    batch_size: int = 8,
-    fp16: bool = False,
-    no_cosine: bool = False,
-):
+def experiment(model_name, target, distractor, max_len, *, batch_size=8, fp16=False, no_cosine=False):
+    # Initialize model
     model = ModelWrapper(model_name, fp16=fp16)
+
+    # Parse dataset and split names
     tgt_ds_name, tgt_split = (target.split("/", 1) + [None])[:2]
     dis_ds_name, dis_split = (distractor.split("/", 1) + [None])[:2]
+
+    # Load dataset configs and splits
     tgt_cfg = DATASET_CFG[tgt_ds_name]
     tgt_ds = list(load_split(tgt_ds_name, tgt_split))
     if tgt_ds_name == dis_ds_name and (tgt_split == dis_split or dis_split is None):
         dis_ds = tgt_ds
     else:
         dis_ds = list(load_split(dis_ds_name, dis_split))
+
+    # Metric setup
     metric_acc = tgt_cfg["metric"] == "accuracy"
     rouge_eval = evaluate.load("rouge") if tgt_cfg["metric"] == "rouge" else None
     if metric_acc:
@@ -37,15 +34,24 @@ def experiment(
             model.tokenizer.encode(tok, add_special_tokens=False)[0]
             for tok in tgt_cfg["answer_tokens"]
         ]
-    prompt_cache: Dict[Tuple[int, int], str] = {}
-    metric_by_len: Dict[str, float] = {}
-    cos_by_len: Dict[str, List[float]] = {}
-    dbg_top5: Dict[str, List[Tuple[str, int]]] = {}
-    debug_examples: List[dict] = []
+
+    # Caches and results
+    prompt_cache = {}
+    metric_by_len = {}
+    cos_by_len = {}
+    dbg_top5 = {}
+    debug_examples = []
+
     n = len(tgt_ds)
+
     for h in range(max_len + 1):
-        preds, sims, top_counter = [], [], Counter()
-        prompts, golds = [], []
+        preds = []
+        sims = []
+        top_counter = Counter()
+        prompts = []
+        golds = []
+
+        # Build prompts and gold answers
         for i in range(n):
             if (h, i) not in prompt_cache:
                 history = build_history(dis_ds_name, dis_ds, i, h)
@@ -55,16 +61,22 @@ def experiment(
                 prompt_cache[(h, i)] = conv
             prompts.append(prompt_cache[(h, i)])
             golds.append(gold)
+
+        # Batch inference
         for i in tqdm(range(0, n, batch_size), desc=f"{tgt_ds_name}:{h}"):
             batch_prompts = prompts[i:i + batch_size]
             batch_golds = golds[i:i + batch_size]
+
             if no_cosine:
                 toks = model.to_tokens(batch_prompts, prepend_bos=True)
                 logits_batch = model.model(toks).logits[:, -1, :].detach().cpu()
                 cos_list_batch = [[0.0] * model.num_layers for _ in batch_prompts]
             else:
                 logits_batch, cos_list_batch = run_example(model, batch_prompts)
+
             sims.extend(cos_list_batch)
+
+            # Prediction and debug logging
             if metric_acc:
                 answer_logits = logits_batch[:, label_ids]
                 choice = answer_logits.argmax(dim=-1)
@@ -106,35 +118,31 @@ def experiment(
                             "target_idx": i + j,
                         },
                     })
+
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
                 gc.collect()
+
+        # Compute metrics
         if metric_acc:
             metric_by_len[str(h)] = sum(p == r for p, r in zip(preds, golds)) / n
         else:
             rl = rouge_eval.compute(predictions=preds, references=golds)["rougeL"]
             metric_by_len[str(h)] = rl["fmeasure"] if isinstance(rl, dict) else float(rl)
+
         cos_by_len[str(h)] = np.mean(sims, axis=0).tolist()
         dbg_top5[str(h)] = [
             (model.to_string(tid).strip(), cnt) for tid, cnt in top_counter.most_common(5)
         ]
+
     return metric_by_len, cos_by_len, tgt_cfg["metric"], dbg_top5, debug_examples
 
-def _safe_json_dump(obj: dict, path: str):
+def _safe_json_dump(obj, path):
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w") as f:
         json.dump(obj, f, indent=2)
 
-def save_results(
-    model: str,
-    target: str,
-    distractor: str,
-    metric_name: str,
-    metric_by_len: Dict[str, float],
-    cos_by_len: Dict[str, List[float]],
-    dbg: Dict[str, List[Tuple[str, int]]],
-    out_dir: str,
-):
+def save_results(model, target, distractor, metric_name, metric_by_len, cos_by_len, dbg, out_dir):
     fname = f"{model.replace('/','@')}__{target}_vs_{distractor}.json"
     _safe_json_dump(
         {
@@ -149,7 +157,7 @@ def save_results(
         os.path.join(out_dir, fname),
     )
 
-def save_debug_log(model: str, target: str, distractor: str, examples: List[dict], out_dir: str):
+def save_debug_log(model, target, distractor, examples, out_dir):
     fname = f"{model.replace('/','@')}__{target}_vs_{distractor}_debug.json"
     _safe_json_dump(
         {

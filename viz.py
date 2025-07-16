@@ -2,79 +2,94 @@ import argparse
 import json
 import os
 from collections import defaultdict
-from typing import Dict, List, Tuple
 
 import matplotlib.pyplot as plt
 import pandas as pd
 
-def _load_result(path: str) -> Tuple[Dict[int, float], Dict[int, List[float]], str, str, str]:
+def load_result(path):
     data = json.load(open(path))
     metric_by_len = {int(k): v for k, v in data["metric_by_len"].items()}
     cos_by_len = {int(k): v for k, v in data.get("cos_by_len", {}).items()}
-    return metric_by_len, cos_by_len, data["model"], data["target"], data["distractor"]
+    return (
+        metric_by_len,
+        cos_by_len,
+        data["model"],
+        data["target"],
+        data["distractor"],
+        data["metric_name"],
+    )
 
-def _df_from_dir(result_dir: str):
-    files = [
-        f
-        for f in os.listdir(result_dir)
-        if f.endswith(".json") and not f.endswith("_debug.json")
-    ]
+def df_from_dir(result_dir):
+    paths = []
+    for root, _, files in os.walk(result_dir):
+        for f in files:
+            if f.endswith(".json") and not f.endswith("_debug.json"):
+                paths.append(os.path.join(root, f))
+
     df_dict, cos_dict = {}, {}
-    model = target = ""
-    for fname in files:
-        metric_by_len, cos_by_len, m, t, d = _load_result(os.path.join(result_dir, fname))
+    model = target = metric = ""
+    for path in paths:
+        metric_by_len, cos_by_len, m, t, d, met = load_result(path)
         df_dict[d] = pd.Series(metric_by_len)
         cos_dict[d] = pd.DataFrame.from_dict(cos_by_len, orient="index").sort_index()
-        model, target = m, t
-    df = pd.DataFrame(df_dict).sort_index()
-    return df, model, target, cos_dict
+        model, target, metric = m, t, met
 
-def _pct_change(df: pd.DataFrame) -> pd.DataFrame:
+    df = pd.DataFrame(df_dict).sort_index()
+    return df, model, target, metric, cos_dict
+
+def pct_change(df):
     return (df - df.iloc[0]) / df.iloc[0] * 100.0
 
-def _plot_metric(df: pd.DataFrame, model: str, target: str, out_dir: str):
+def plot(series_dict, xlabel, ylabel, title, out_dir, fname, legend_title):
     plt.figure()
-    for col in df.columns:
-        plt.plot(df.index, df[col], marker="o", label=col)
-    plt.xlabel("History Length")
-    plt.ylabel("Metric")
-    plt.title(f"{model} | {target}", fontsize=8)
-    plt.legend()
-    path = os.path.join(out_dir, "metric.png")
+    for label, series in series_dict.items():
+        plt.plot(series.index, series.values, marker="o", label=label)
+    plt.xlabel(xlabel)
+    plt.ylabel(ylabel)
+    plt.title(title, fontsize=8)
+    plt.legend(title=legend_title)
+    ticks = next(iter(series_dict.values())).index
+    plt.xticks(ticks)
+    path = os.path.join(out_dir, fname)
     plt.savefig(path, bbox_inches="tight")
     plt.close()
     print("saved", path)
 
-def _plot_pct_change(df: pd.DataFrame, model: str, target: str, out_dir: str):
-    plt.figure()
-    pct_df = _pct_change(df)
-    for col in pct_df.columns:
-        plt.plot(pct_df.index, pct_df[col], marker="o", label=col)
-    plt.xlabel("History Length")
-    plt.ylabel("% change vs h=0")
-    plt.title(f"{model} | {target}", fontsize=8)
-    plt.legend()
-    path = os.path.join(out_dir, "metric_pct_change.png")
-    plt.savefig(path, bbox_inches="tight")
-    plt.close()
-    print("saved", path)
+def plot_metric(df, model, target, metric, out_dir):
+    title = f"{model} | target={target} | metric={metric}"
+    plot(df.to_dict("series"),
+         "History Length",
+         metric,
+         title,
+         out_dir,
+         "metric.png",
+         legend_title="distractor")
 
-def _plot_cosine(cos_dict: Dict[str, pd.DataFrame], model: str, target: str, out_dir: str):
+def plot_pct_change(df, model, target, metric, out_dir):
+    pct = pct_change(df)
+    title = f"{model} | target={target} | % change in {metric}"
+    ylabel = f"% change vs h=0 ({metric})"
+    plot(pct.to_dict("series"),
+         "History Length",
+         ylabel,
+         title,
+         out_dir,
+         "metric_pct_change.png",
+         legend_title="distractor")
+
+def plot_cosine(cos_dict, model, target, metric, out_dir):
     for distractor, cos_df in cos_dict.items():
-        plt.figure()
-        for h_len, row in cos_df.iterrows():
-            plt.plot(cos_df.columns, row, marker="o", label=f"history {h_len}")
-        plt.xlabel("Layer")
-        plt.ylabel("Cosine similarity")
-        plt.title(f"{model} | {target} | distractor={distractor}", fontsize=8)
-        plt.legend()
-        fname = f"cosine_{distractor.replace('/','_')}.png"
-        path = os.path.join(out_dir, fname)
-        plt.savefig(path, bbox_inches="tight")
-        plt.close()
-        print("saved", path)
+        title = f"{model} | target={target} | history={distractor} | metric={metric}"
+        fname = f"cosine_{distractor.replace('/', '_')}.png"
+        plot(cos_df.to_dict("series"),
+             "Layer",
+             "Cosine similarity",
+             title,
+             out_dir,
+             fname,
+             legend_title="history length")
 
-def _verify(debug_path: str):
+def verify(debug_path):
     with open(debug_path) as f:
         data = json.load(f)
 
@@ -109,14 +124,14 @@ def main():
     args = ap.parse_args()
 
     if args.cmd == "metric":
-        df, model, target, cos_dict = _df_from_dir(args.result_dir)
+        df, model, target, metric, cos_dict = df_from_dir(args.result_dir)
         os.makedirs(args.out_dir, exist_ok=True)
-        _plot_metric(df, model, target, args.out_dir)
-        _plot_pct_change(df, model, target, args.out_dir)
-        _plot_cosine(cos_dict, model, target, args.out_dir)
+        plot_metric(df, model, target, metric, args.out_dir)
+        plot_pct_change(df, model, target, metric, args.out_dir)
+        plot_cosine(cos_dict, model, target, metric, args.out_dir)
 
     elif args.cmd == "verify":
-        _verify(args.debug_file)
+        verify(args.debug_file)
 
 if __name__ == "__main__":
     main()
