@@ -128,41 +128,47 @@ def cosine(a, b):
     return torch.nn.functional.cosine_similarity(a, b, dim=-1)
 
 @torch.no_grad()
-def run_example(model, texts):
-    toks = model.to_tokens(texts, prepend_bos=True)
-    output = model.model(toks)
+def run_example(model_wrapper, texts):
+    toks = model_wrapper.to_tokens(texts, prepend_bos=True)
+    output = model_wrapper.model(toks)
     final_logits = output.logits[:, -1, :].detach()
-    sims = torch.zeros(len(texts), model.num_layers, device="cpu")
+    sims = torch.zeros(len(texts), model_wrapper.num_layers, device="cpu")
     handles = []
-    w_u = model.W_U
+    w_u = model_wrapper.W_U
 
     def make_hook(idx):
+        # Hook to capture the output of each layer for the last token
         def hook(module, inp, out):
-            last = out[:, -1, :]
-            sims[:, idx] = cosine(last @ w_u.T, final_logits).cpu()
+            last_token = out[0][:, -1, :]
+            # Compute cosine similarity between projected hidden state and final logits
+            sims[:, idx] = cosine(last_token @ w_u.T, final_logits).cpu()
         return hook
 
-    for i, block in enumerate(model.model.transformer.h):
-        handles.append(block.register_forward_hook(make_hook(i)))
+    layers = getattr(model_wrapper.model.model, "layers", None)
+    if layers is None:
+        raise AttributeError("Cannot find decoder layers in model structure.")
 
-    _ = model.model(toks)
-
-    for h in handles:
+    # Register hooks for each layer
+    handles = [block.register_forward_hook(make_hook(i)) for i, block in enumerate(layers)]
+    
+    _ = model_wrapper.model(toks)
+    
+    for h in handles: 
         h.remove()
-
+    
     return final_logits.cpu(), sims.tolist()
 
 @torch.no_grad()
-def greedy_generate(model, prompts, *, max_new_tokens=64):
-    toks = model.to_tokens(prompts, prepend_bos=True)
-    gen = model.model.generate(
+def greedy_generate(model_wrapper, prompts, *, max_new_tokens=64):
+    toks = model_wrapper.to_tokens(prompts, prepend_bos=True)
+    gen = model_wrapper.model.generate(
         toks,
         max_new_tokens=max_new_tokens,
         do_sample=False,
         use_cache=True,
     )
     gen_ids = gen[:, toks.shape[1]:]
-    return [model.to_string(ids) for ids in gen_ids]
+    return [model_wrapper.to_string(ids) for ids in gen_ids]
 
 def build_history(task, samples, idx, history_len):
     turns = []

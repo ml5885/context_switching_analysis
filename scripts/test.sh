@@ -1,20 +1,16 @@
 #!/usr/bin/env bash
 # scripts/run_experiments.sh
-#
-# Run the context‑switch experiments with history length = 2
-# for all three benchmark tasks as both target and distractor.
-# Results are stored in ./test_results/
 
 set -euo pipefail
 
-MODEL="Qwen/Qwen2.5-0.5B"
-MAX_LEN=1
+MODEL="meta-llama/Llama-2-7b-chat-hf"
+MAX_LEN=6
 OUT_DIR="test_results"
 BATCH_SIZE=1
 TASKS=(
-  "mmlu/validation"
-  "rotten_tomatoes/validation"
-  "tweetqa/validation"
+  "mmlu"
+  "rotten_tomatoes"
+  "tweetqa"
 )
 
 mkdir -p "${OUT_DIR}"
@@ -29,7 +25,6 @@ for target in "${TASKS[@]}"; do
       --max_len "${MAX_LEN}" \
       --batch_size "${BATCH_SIZE}" \
       --fp16 \
-      --no_cosine \
       --out_dir "${OUT_DIR}"
   done
 done

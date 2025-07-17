@@ -12,7 +12,7 @@ import gc
 
 def experiment(model_name, target, distractor, max_len, *, batch_size=8, fp16=False, no_cosine=False):
     # Initialize model
-    model = ModelWrapper(model_name, fp16=fp16)
+    model_wrapper = ModelWrapper(model_name, fp16=fp16)
 
     # Parse dataset and split names
     tgt_ds_name, tgt_split = (target.split("/", 1) + [None])[:2]
@@ -31,7 +31,7 @@ def experiment(model_name, target, distractor, max_len, *, batch_size=8, fp16=Fa
     rouge_eval = evaluate.load("rouge") if tgt_cfg["metric"] == "rouge" else None
     if metric_acc:
         label_ids = [
-            model.tokenizer.encode(tok, add_special_tokens=False)[0]
+            model_wrapper.tokenizer.encode(tok, add_special_tokens=False)[0]
             for tok in tgt_cfg["answer_tokens"]
         ]
 
@@ -68,11 +68,11 @@ def experiment(model_name, target, distractor, max_len, *, batch_size=8, fp16=Fa
             batch_golds = golds[i:i + batch_size]
 
             if no_cosine:
-                toks = model.to_tokens(batch_prompts, prepend_bos=True)
-                logits_batch = model.model(toks).logits[:, -1, :].detach().cpu()
-                cos_list_batch = [[0.0] * model.num_layers for _ in batch_prompts]
+                toks = model_wrapper.to_tokens(batch_prompts, prepend_bos=True)
+                logits_batch = model_wrapper.model(toks).logits[:, -1, :].detach().cpu()
+                cos_list_batch = [[0.0] * model_wrapper.num_layers for _ in batch_prompts]
             else:
-                logits_batch, cos_list_batch = run_example(model, batch_prompts)
+                logits_batch, cos_list_batch = run_example(model_wrapper, batch_prompts)
 
             sims.extend(cos_list_batch)
 
@@ -98,7 +98,7 @@ def experiment(model_name, target, distractor, max_len, *, batch_size=8, fp16=Fa
                     })
             else:
                 gen_batch = greedy_generate(
-                    model,
+                    model_wrapper,
                     batch_prompts,
                     max_new_tokens=32,
                 )
@@ -132,7 +132,7 @@ def experiment(model_name, target, distractor, max_len, *, batch_size=8, fp16=Fa
 
         cos_by_len[str(h)] = np.mean(sims, axis=0).tolist()
         dbg_top5[str(h)] = [
-            (model.to_string(tid).strip(), cnt) for tid, cnt in top_counter.most_common(5)
+            (model_wrapper.to_string(tid).strip(), cnt) for tid, cnt in top_counter.most_common(5)
         ]
 
     return metric_by_len, cos_by_len, tgt_cfg["metric"], dbg_top5, debug_examples
