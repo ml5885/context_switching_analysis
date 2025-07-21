@@ -5,6 +5,7 @@ from collections import defaultdict
 
 import matplotlib.pyplot as plt
 import pandas as pd
+import matplotlib as mpl
 
 def load_result(path):
     data = json.load(open(path))
@@ -41,53 +42,97 @@ def pct_change(df):
     return (df - df.iloc[0]) / df.iloc[0] * 100.0
 
 def plot(series_dict, xlabel, ylabel, title, out_dir, fname, legend_title):
-    plt.figure()
+    plt.figure(figsize=(8, 6))
+
     for label, series in series_dict.items():
         plt.plot(series.index, series.values, marker="o", label=label)
-    plt.xlabel(xlabel)
-    plt.ylabel(ylabel)
-    plt.title(title, fontsize=8)
-    plt.legend(title=legend_title)
+
+    plt.xlabel(xlabel, fontsize=12)
+    plt.ylabel(ylabel, fontsize=12)
+    plt.title(title, fontsize=10)
+
+    plt.legend(
+        title=legend_title,
+        loc='lower center',
+        bbox_to_anchor=(0.5, -0.4),
+        fontsize=10,
+        title_fontsize=11,
+        ncol=3,
+        frameon=True
+    )
+
     ticks = next(iter(series_dict.values())).index
-    plt.xticks(ticks)
+    plt.xticks(ticks, fontsize=10)
+    plt.tight_layout(rect=[0, 0.12, 1, 1])
+
     path = os.path.join(out_dir, fname)
     plt.savefig(path, bbox_inches="tight")
     plt.close()
+
     print("saved", path)
 
 def plot_metric(df, model, target, metric, out_dir):
     title = f"{model} | target={target} | metric={metric}"
-    plot(df.to_dict("series"),
-         "History Length",
-         metric,
-         title,
-         out_dir,
-         "metric.png",
-         legend_title="distractor")
+
+    plot(
+        df.to_dict("series"),
+        "History Length",
+        metric,
+        title,
+        out_dir,
+        "metric.png",
+        legend_title="distractor"
+    )
 
 def plot_pct_change(df, model, target, metric, out_dir):
     pct = pct_change(df)
     title = f"{model} | target={target} | % change in {metric}"
     ylabel = f"% change vs h=0 ({metric})"
-    plot(pct.to_dict("series"),
-         "History Length",
-         ylabel,
-         title,
-         out_dir,
-         "metric_pct_change.png",
-         legend_title="distractor")
+
+    plot(
+        pct.to_dict("series"),
+        "History Length",
+        ylabel,
+        title,
+        out_dir,
+        "metric_pct_change.png",
+        legend_title="distractor"
+    )
 
 def plot_cosine(cos_dict, model, target, metric, out_dir):
     for distractor, cos_df in cos_dict.items():
-        title = f"{model} | target={target} | history={distractor} | metric={metric}"
+        title = f"{model} | target={target} | distractor={distractor} | metric={metric}"
         fname = f"cosine_{distractor.replace('/', '_')}.png"
-        plot(cos_df.to_dict("series"),
-             "Layer",
-             "Cosine similarity",
-             title,
-             out_dir,
-             fname,
-             legend_title="history length")
+
+        fig, ax = plt.subplots(figsize=(10, 6))
+        history_lens = list(cos_df.index)
+
+        cmap = plt.get_cmap("viridis")
+        norm = mpl.colors.Normalize(vmin=min(history_lens), vmax=max(history_lens))
+        sm = mpl.cm.ScalarMappable(cmap=cmap, norm=norm)
+
+        for hist_len in history_lens:
+            color = cmap(norm(hist_len))
+            ax.plot(cos_df.columns, cos_df.loc[hist_len], marker="o", color=color, label=f"History {hist_len}")
+
+        ax.set_xlabel("Layer", fontsize=12)
+        ax.set_ylabel("Cosine similarity", fontsize=12)
+        ax.set_title(title, fontsize=10)
+
+        cbar = fig.colorbar(sm, ax=ax, orientation="vertical", pad=0.02, aspect=40)
+        cbar.set_label("History Length", fontsize=11)
+        cbar.ax.tick_params(labelsize=10)
+
+        ax.set_xticks(cos_df.columns)
+        ax.tick_params(axis='x', labelsize=10)
+
+        fig.tight_layout(rect=[0, 0, 1, 1])
+
+        path = os.path.join(out_dir, fname)
+        fig.savefig(path, bbox_inches="tight")
+        plt.close(fig)
+
+        print("saved", path)
 
 def verify(debug_path):
     with open(debug_path) as f:
@@ -135,3 +180,8 @@ def main():
 
 if __name__ == "__main__":
     main()
+    
+# Example usage:
+# python viz.py metric --result_dir test_results/meta-llama@Llama-2-7b-chat-hf__mmlu --out_dir plots_mmlu
+# python viz.py metric --result_dir test_results/meta-llama@Llama-2-7b-chat-hf__rotten_tomatoes --out_dir plots_rotten_tomatoes
+# python viz.py metric --result_dir test_results/meta-llama@Llama-2-7b-chat-hf__tweetqa --out_dir plots_tweetqa
