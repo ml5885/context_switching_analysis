@@ -104,6 +104,8 @@ def experiment(model_name, target, distractor, max_len, *, batch_size=8, fp16=Fa
             model_wrapper.tokenizer.encode(tok, add_special_tokens=False)
             for tok in tgt_cfg["answer_tokens"]
         ]
+        print("[DEBUG] label_tok_lists:", label_tok_lists)
+        assert not all(len(x) == 1 for x in label_tok_lists), "You are in single-token mode. This will be wrong for Llama-2."
         all_single = all(len(x) == 1 for x in label_tok_lists)
         single_label_ids = [x[0] for x in label_tok_lists] if all_single else None
 
@@ -151,46 +153,25 @@ def experiment(model_name, target, distractor, max_len, *, batch_size=8, fp16=Fa
             sims.extend(cos_list_batch)
 
             if metric_acc:
-                if single_label_ids is not None:
-                    # fast path: last-token compare
-                    answer_logits = logits_batch[:, single_label_ids]
-                    choice = answer_logits.argmax(dim=-1)
-                    for j, cidx in enumerate(choice.tolist()):
-                        label = tgt_cfg["labels"][cidx]
-                        preds.append(label)
-                        for tid in torch.topk(logits_batch[j], 5).indices.tolist():
-                            top_counter[tid] += 1
-                        debug_examples.append({
-                            "prompt_text": batch_prompts[j],
-                            "model_prediction": label,
-                            "expected_answer": batch_golds[j],
-                            "config": {
-                                "target_dataset": tgt_ds_name,
-                                "distractor_dataset": dis_ds_name,
-                                "history_len": h,
-                                "target_idx": i + j,
-                            },
-                        })
-                else:
-                    # faithful multi-token scoring
-                    cand_scores = _score_multitoken_labels(model_wrapper, batch_prompts, label_tok_lists)
-                    choice = cand_scores.argmax(dim=-1)
-                    for j, cidx in enumerate(choice.tolist()):
-                        label = tgt_cfg["labels"][cidx]
-                        preds.append(label)
-                        for tid in torch.topk(logits_batch[j], 5).indices.tolist():
-                            top_counter[tid] += 1
-                        debug_examples.append({
-                            "prompt_text": batch_prompts[j],
-                            "model_prediction": label,
-                            "expected_answer": batch_golds[j],
-                            "config": {
-                                "target_dataset": tgt_ds_name,
-                                "distractor_dataset": dis_ds_name,
-                                "history_len": h,
-                                "target_idx": i + j,
-                            },
-                        })
+                cand_scores = _score_multitoken_labels(model_wrapper, batch_prompts, label_tok_lists)
+                print("[DEBUG] cand_scores:", cand_scores)
+                choice = cand_scores.argmax(dim=-1)
+                for j, cidx in enumerate(choice.tolist()):
+                    label = tgt_cfg["labels"][cidx]
+                    preds.append(label)
+                    for tid in torch.topk(logits_batch[j], 5).indices.tolist():
+                        top_counter[tid] += 1
+                    debug_examples.append({
+                        "prompt_text": batch_prompts[j],
+                        "model_prediction": label,
+                        "expected_answer": batch_golds[j],
+                        "config": {
+                            "target_dataset": tgt_ds_name,
+                            "distractor_dataset": dis_ds_name,
+                            "history_len": h,
+                            "target_idx": i + j,
+                        },
+                    })
             else:
                 # generation tasks (tweetqa)
                 gen_batch = greedy_generate(model_wrapper, batch_prompts, max_new_tokens=32)
@@ -234,6 +215,27 @@ def main():
     ap.add_argument("--model", required=True)
     ap.add_argument("--target", required=True)
     ap.add_argument("--distractor", required=True)
+    ap.add_argument("--max_len", type=int, default=6)
+    ap.add_argument("--out_dir", default="results")
+    ap.add_argument("--batch_size", type=int, default=8)
+    ap.add_argument("--fp16", action="store_true")
+    ap.add_argument("--no_cosine", action="store_true")
+    args = ap.parse_args()
+
+    metrics, cosines, metric_name, dbg, debug_log = experiment(
+        args.model,
+        args.target,
+        args.distractor,
+        args.max_len,
+        batch_size=args.batch_size,
+        fp16=args.fp16,
+        no_cosine=args.no_cosine,
+    )
+    save_results(args.model, args.target, args.distractor, metric_name, metrics, cosines, dbg, args.out_dir)
+    save_debug_log(args.model, args.target, args.distractor, debug_log, args.out_dir)
+
+if __name__ == "__main__":
+    main()
     ap.add_argument("--max_len", type=int, default=6)
     ap.add_argument("--out_dir", default="results")
     ap.add_argument("--batch_size", type=int, default=8)
