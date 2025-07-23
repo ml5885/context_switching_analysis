@@ -7,7 +7,8 @@ import evaluate
 import numpy as np
 import torch
 from tqdm import tqdm
-from core import DATASET_CFG, ModelWrapper, build_history, build_prompt, greedy_generate, load_split, run_example
+from data import DATASET_CFG, build_history, build_prompt, load_split
+from model import ModelWrapper, greedy_generate, run_example
 import gc
 
 def experiment(model_name, target, distractor, max_len, *, batch_size=8, fp16=False, no_cosine=False):
