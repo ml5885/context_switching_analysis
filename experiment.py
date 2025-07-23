@@ -11,6 +11,42 @@ from data import DATASET_CFG, build_history, build_prompt, load_split
 from model import ModelWrapper, greedy_generate, run_example
 import gc
 
+def _score_multitoken_labels(model_wrapper, prompts, label_tok_lists):
+    """
+    Compute summed log-probabilities for each label sequence per prompt.
+    Slow but simple: 1 forward per (batch item, label).
+    Returns a tensor [B, L] of scores.
+    """
+    tokenizer = model_wrapper.tokenizer
+    model = model_wrapper.model
+    device = model_wrapper.device
+
+    # tokenize prompts once (with padding=False to keep true lengths)
+    enc = tokenizer(prompts, return_tensors="pt", padding=False, add_special_tokens=True)
+    B = len(prompts)
+    scores = torch.zeros(B, len(label_tok_lists), device=device)
+
+    for b in range(B):
+        prompt_ids = torch.tensor(enc["input_ids"][b], device=device)
+        for li, cand in enumerate(label_tok_lists):
+            cand_ids = torch.tensor(cand, device=device)
+            full_ids = torch.cat([prompt_ids, cand_ids], dim=0).unsqueeze(0)
+            with torch.no_grad():
+                out = model(full_ids).logits  # [1, T, V]
+                log_probs = torch.log_softmax(out[:, :-1, :], dim=-1)[0]  # [T-1, V]
+
+            prompt_len = prompt_ids.size(0)
+            cand_len = cand_ids.size(0)
+            # first candidate token is predicted at index prompt_len-1
+            idx_start = prompt_len - 1
+            lp_sum = 0.0
+            for t in range(cand_len):
+                tok_id = cand_ids[t].item()
+                lp_sum += log_probs[idx_start + t, tok_id].item()
+            scores[b, li] = lp_sum
+
+    return scores.cpu()
+
 def experiment(model_name, target, distractor, max_len, *, batch_size=8, fp16=False, no_cosine=False):
     # Initialize model
     model_wrapper = ModelWrapper(model_name, fp16=fp16)
@@ -19,7 +55,7 @@ def experiment(model_name, target, distractor, max_len, *, batch_size=8, fp16=Fa
     tgt_ds_name, tgt_split = (target.split("/", 1) + [None])[:2]
     dis_ds_name, dis_split = (distractor.split("/", 1) + [None])[:2]
 
-    # Load dataset configs and splits
+    # Load datasets
     tgt_cfg = DATASET_CFG[tgt_ds_name]
     tgt_ds = list(load_split(tgt_ds_name, tgt_split))
     if tgt_ds_name == dis_ds_name and (tgt_split == dis_split or dis_split is None):
@@ -30,13 +66,18 @@ def experiment(model_name, target, distractor, max_len, *, batch_size=8, fp16=Fa
     # Metric setup
     metric_acc = tgt_cfg["metric"] == "accuracy"
     rouge_eval = evaluate.load("rouge") if tgt_cfg["metric"] == "rouge" else None
+
+    # Precompute label tokenization
     if metric_acc:
         label_tok_lists = [
             model_wrapper.tokenizer.encode(tok, add_special_tokens=False)
             for tok in tgt_cfg["answer_tokens"]
         ]
-        assert all(len(x) >= 1 for x in label_tok_lists), "Empty label?"
-
+        single_token = all(len(x) == 1 for x in label_tok_lists)
+        if single_token:
+            label_ids = [x[0] for x in label_tok_lists]
+        else:
+            label_ids = None  # unused in multi-token case
 
     # Caches and results
     prompt_cache = {}
@@ -61,9 +102,11 @@ def experiment(model_name, target, distractor, max_len, *, batch_size=8, fp16=Fa
                 final_p, gold = build_prompt(tgt_ds_name, tgt_ds[i])
                 tag = "Assistant:" + (" <Answer>" if tgt_cfg["answer_suffix"] else "")
                 conv = (history + "\n\n" if history else "") + f"User: {final_p}\n{tag}"
-                prompt_cache[(h, i)] = conv
-            prompts.append(prompt_cache[(h, i)])
+                prompt_cache[(h, i)] = (conv, gold)
+            conv, gold = prompt_cache[(h, i)]
+            prompts.append(conv)
             golds.append(gold)
+
         print(f"[DEBUG] History len: {h}, Example prompt sample: {prompts[0]}")
         print(f"[DEBUG] Gold answer sample: {golds[0]}")
 
@@ -87,30 +130,55 @@ def experiment(model_name, target, distractor, max_len, *, batch_size=8, fp16=Fa
 
             sims.extend(cos_list_batch)
 
-            # Prediction and debug logging
             if metric_acc:
-                answer_logits = logits_batch[:, label_ids]
-                print(f"[DEBUG] answer_logits: {answer_logits}")
-                choice = answer_logits.argmax(dim=-1)
-                print(f"[DEBUG] choice: {choice}")
-                for j, cidx in enumerate(choice.tolist()):
-                    label = tgt_cfg["labels"][cidx]
-                    preds.append(label)
-                    print(f"[DEBUG] Predicted label: {label}, Gold: {batch_golds[j]}")
-                    for tid in torch.topk(logits_batch[j], 5).indices.tolist():
-                        top_counter[tid] += 1
-                    debug_examples.append({
-                        "prompt_text": batch_prompts[j],
-                        "model_prediction": label,
-                        "expected_answer": batch_golds[j],
-                        "config": {
-                            "target_dataset": tgt_ds_name,
-                            "distractor_dataset": dis_ds_name,
-                            "history_len": h,
-                            "target_idx": i + j,
-                        },
-                    })
+                if single_token:
+                    answer_logits = logits_batch[:, label_ids]
+                    print(f"[DEBUG] answer_logits: {answer_logits}")
+                    choice = answer_logits.argmax(dim=-1)
+                    print(f"[DEBUG] choice: {choice}")
+                    for j, cidx in enumerate(choice.tolist()):
+                        label = tgt_cfg["labels"][cidx]
+                        preds.append(label)
+                        print(f"[DEBUG] Predicted label: {label}, Gold: {batch_golds[j]}")
+                        for tid in torch.topk(logits_batch[j], 5).indices.tolist():
+                            top_counter[tid] += 1
+                        debug_examples.append({
+                            "prompt_text": batch_prompts[j],
+                            "model_prediction": label,
+                            "expected_answer": batch_golds[j],
+                            "config": {
+                                "target_dataset": tgt_ds_name,
+                                "distractor_dataset": dis_ds_name,
+                                "history_len": h,
+                                "target_idx": i + j,
+                            },
+                        })
+                else:
+                    # multi-token scoring path
+                    cand_scores = _score_multitoken_labels(model_wrapper, batch_prompts, label_tok_lists)
+                    print(f"[DEBUG] cand_scores: {cand_scores}")
+                    choice = cand_scores.argmax(dim=-1)
+                    print(f"[DEBUG] choice: {choice}")
+                    for j, cidx in enumerate(choice.tolist()):
+                        label = tgt_cfg["labels"][cidx]
+                        preds.append(label)
+                        print(f"[DEBUG] Predicted label: {label}, Gold: {batch_golds[j]}")
+                        # still log top5 from the prompt-last-token logits
+                        for tid in torch.topk(logits_batch[j], 5).indices.tolist():
+                            top_counter[tid] += 1
+                        debug_examples.append({
+                            "prompt_text": batch_prompts[j],
+                            "model_prediction": label,
+                            "expected_answer": batch_golds[j],
+                            "config": {
+                                "target_dataset": tgt_ds_name,
+                                "distractor_dataset": dis_ds_name,
+                                "history_len": h,
+                                "target_idx": i + j,
+                            },
+                        })
             else:
+                # generation metric (tweetqa)
                 gen_batch = greedy_generate(
                     model_wrapper,
                     batch_prompts,
