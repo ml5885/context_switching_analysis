@@ -3,10 +3,10 @@
 
 set -euo pipefail
 
-MODEL="meta-llama/Llama-2-7b-chat-hf"
-MAX_LEN=6
+MODEL="Qwen/Qwen2.5-0.5B-Instruct"
+MAX_LEN=8
 OUT_DIR="test_results"
-BATCH_SIZE=1
+BATCH_SIZE=4
 TASKS=(
   "mmlu"
   "rotten_tomatoes"

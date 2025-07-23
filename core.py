@@ -39,7 +39,7 @@ DATASET_CFG = {
     "tweetqa": {
         "hf_name": "ucsbnlp/tweet_qa",
         "subset": None,
-        "split": "validation",
+        "split": "test",
         "metric": "rouge",
         "labels": [],
         "answer_tokens": [],
@@ -107,18 +107,23 @@ class ModelWrapper:
             torch_dtype=dtype
         ).to(self.device)
         self.num_layers = self.model.config.num_hidden_layers
+        print(f"[DEBUG] Loaded model {name} on {self.device} with dtype {dtype}")
 
     def to_tokens(self, text, *, prepend_bos=False):
-        return self.tokenizer(
+        toks = self.tokenizer(
             text,
             return_tensors="pt",
             padding=True,
             truncation=False,
             add_special_tokens=not prepend_bos,
         ).input_ids.to(self.device)
+        print(f"[DEBUG] to_tokens: {text[:60]}... -> shape {toks.shape}")
+        return toks
 
     def to_string(self, ids):
-        return self.tokenizer.decode(ids, skip_special_tokens=True)
+        s = self.tokenizer.decode(ids, skip_special_tokens=True)
+        print(f"[DEBUG] to_string: {ids} -> {s}")
+        return s
 
     @property
     def W_U(self):
@@ -161,6 +166,7 @@ def run_example(model_wrapper, texts):
 @torch.no_grad()
 def greedy_generate(model_wrapper, prompts, *, max_new_tokens=64):
     toks = model_wrapper.to_tokens(prompts, prepend_bos=True)
+    print(f"[DEBUG] greedy_generate toks shape: {toks.shape}")
     gen = model_wrapper.model.generate(
         toks,
         max_new_tokens=max_new_tokens,
@@ -168,7 +174,10 @@ def greedy_generate(model_wrapper, prompts, *, max_new_tokens=64):
         use_cache=True,
     )
     gen_ids = gen[:, toks.shape[1]:]
-    return [model_wrapper.to_string(ids) for ids in gen_ids]
+    print(f"[DEBUG] greedy_generate gen_ids: {gen_ids}")
+    results = [model_wrapper.to_string(ids) for ids in gen_ids]
+    print(f"[DEBUG] greedy_generate results: {results}")
+    return results
 
 def build_history(task, samples, idx, history_len):
     turns = []

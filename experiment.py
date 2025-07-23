@@ -61,28 +61,39 @@ def experiment(model_name, target, distractor, max_len, *, batch_size=8, fp16=Fa
                 prompt_cache[(h, i)] = conv
             prompts.append(prompt_cache[(h, i)])
             golds.append(gold)
+        print(f"[DEBUG] History len: {h}, Example prompt sample: {prompts[0]}")
+        print(f"[DEBUG] Gold answer sample: {golds[0]}")
 
         # Batch inference
         for i in tqdm(range(0, n, batch_size), desc=f"{tgt_ds_name}:{h}"):
             batch_prompts = prompts[i:i + batch_size]
             batch_golds = golds[i:i + batch_size]
+            print(f"[DEBUG] Batch idx: {i}, batch_prompts[0]: {batch_prompts[0]}")
+            print(f"[DEBUG] Batch golds: {batch_golds}")
 
             if no_cosine:
                 toks = model_wrapper.to_tokens(batch_prompts, prepend_bos=True)
+                print(f"[DEBUG] toks shape: {toks.shape}")
                 logits_batch = model_wrapper.model(toks).logits[:, -1, :].detach().cpu()
+                print(f"[DEBUG] logits_batch shape: {logits_batch.shape}")
                 cos_list_batch = [[0.0] * model_wrapper.num_layers for _ in batch_prompts]
             else:
                 logits_batch, cos_list_batch = run_example(model_wrapper, batch_prompts)
+                print(f"[DEBUG] logits_batch shape: {logits_batch.shape}")
+                print(f"[DEBUG] cos_list_batch: {cos_list_batch}")
 
             sims.extend(cos_list_batch)
 
             # Prediction and debug logging
             if metric_acc:
                 answer_logits = logits_batch[:, label_ids]
+                print(f"[DEBUG] answer_logits: {answer_logits}")
                 choice = answer_logits.argmax(dim=-1)
+                print(f"[DEBUG] choice: {choice}")
                 for j, cidx in enumerate(choice.tolist()):
                     label = tgt_cfg["labels"][cidx]
                     preds.append(label)
+                    print(f"[DEBUG] Predicted label: {label}, Gold: {batch_golds[j]}")
                     for tid in torch.topk(logits_batch[j], 5).indices.tolist():
                         top_counter[tid] += 1
                     debug_examples.append({
@@ -102,9 +113,11 @@ def experiment(model_name, target, distractor, max_len, *, batch_size=8, fp16=Fa
                     batch_prompts,
                     max_new_tokens=32,
                 )
+                print(f"[DEBUG] gen_batch: {gen_batch}")
                 for j, generated in enumerate(gen_batch):
                     label = generated.strip()
                     preds.append(label)
+                    print(f"[DEBUG] Generated label: {label}, Gold: {batch_golds[j]}")
                     for tid in torch.topk(logits_batch[j], 5).indices.tolist():
                         top_counter[tid] += 1
                     debug_examples.append({
