@@ -30,10 +30,12 @@ def experiment(model_name, target, distractor, max_len, *, batch_size=8, fp16=Fa
     metric_acc = tgt_cfg["metric"] == "accuracy"
     rouge_eval = evaluate.load("rouge") if tgt_cfg["metric"] == "rouge" else None
     if metric_acc:
-        label_ids = [
-            model_wrapper.tokenizer.encode(tok, add_special_tokens=False)[0]
+        label_tok_lists = [
+            model_wrapper.tokenizer.encode(tok, add_special_tokens=False)
             for tok in tgt_cfg["answer_tokens"]
         ]
+        assert all(len(x) >= 1 for x in label_tok_lists), "Empty label?"
+
 
     # Caches and results
     prompt_cache = {}
