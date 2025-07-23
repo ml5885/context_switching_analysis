@@ -53,8 +53,10 @@ def _score_multitoken_labels(model_wrapper, prompts, label_tok_lists):
     device = model_wrapper.device
 
     # tokenize prompts individually to keep true lengths
-    enc = tok(prompts, return_tensors="pt", padding=False, add_special_tokens=True)
-    input_ids_list = enc["input_ids"]  # list of tensors with variable length
+    input_ids_list = [
+        tok(p, return_tensors="pt", padding=False, add_special_tokens=True)["input_ids"].squeeze(0)
+        for p in prompts
+    ]
 
     scores = torch.zeros(len(prompts), len(label_tok_lists), device="cpu")
 
