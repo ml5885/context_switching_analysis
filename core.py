@@ -109,6 +109,16 @@ class ModelWrapper:
         self.num_layers = self.model.config.num_hidden_layers
         print(f"[DEBUG] Loaded model {name} on {self.device} with dtype {dtype}")
 
+        # --- DEBUG: Print answer token ids for each dataset ---
+        for ds_name, cfg in DATASET_CFG.items():
+            if cfg["answer_tokens"]:
+                print(f"[DEBUG] {ds_name} answer_tokens:")
+                for tok in cfg["answer_tokens"]:
+                    ids = self.tokenizer.encode(tok, add_special_tokens=False)
+                    print(f"  '{tok}' -> {ids}")
+                    if len(ids) != 1:
+                        print(f"  [WARNING] Answer token '{tok}' is not a single token for this tokenizer!")
+
     def to_tokens(self, text, *, prepend_bos=False):
         toks = self.tokenizer(
             text,
