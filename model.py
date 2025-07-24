@@ -17,17 +17,6 @@ class ModelWrapper:
         ).to(self.device)
 
         self.num_layers = self.model.config.num_hidden_layers
-        print(f"[DEBUG] Loaded model {name} on {self.device} with dtype {dtype}")
-
-        # --- DEBUG: Print answer token ids for each dataset ---
-        for ds_name, cfg in DATASET_CFG.items():
-            if cfg["answer_tokens"]:
-                print(f"[DEBUG] {ds_name} answer_tokens:")
-                for tok in cfg["answer_tokens"]:
-                    ids = self.tokenizer.encode(tok, add_special_tokens=False)
-                    print(f"  '{tok}' -> {ids}")
-                    if len(ids) != 1:
-                        print(f"  [WARNING] Answer token '{tok}' is not a single token for this tokenizer!")
 
     def to_tokens(self, text, *, prepend_bos=False):
         toks = self.tokenizer(
@@ -37,12 +26,10 @@ class ModelWrapper:
             truncation=False,
             add_special_tokens=not prepend_bos,
         ).input_ids.to(self.device)
-        print(f"[DEBUG] to_tokens: {text[:60]}... -> shape {toks.shape}")
         return toks
 
     def to_string(self, ids):
         s = self.tokenizer.decode(ids, skip_special_tokens=True)
-        print(f"[DEBUG] to_string: {ids} -> {s}")
         return s
 
     @property
@@ -86,7 +73,7 @@ def run_example(model_wrapper, texts):
 @torch.no_grad()
 def greedy_generate(model_wrapper, prompts, *, max_new_tokens=64):
     toks = model_wrapper.to_tokens(prompts, prepend_bos=True)
-    print(f"[DEBUG] greedy_generate toks shape: {toks.shape}")
+
     gen = model_wrapper.model.generate(
         toks,
         max_new_tokens=max_new_tokens,
@@ -94,7 +81,7 @@ def greedy_generate(model_wrapper, prompts, *, max_new_tokens=64):
         use_cache=True,
     )
     gen_ids = gen[:, toks.shape[1]:]
-    print(f"[DEBUG] greedy_generate gen_ids: {gen_ids}")
+
     results = [model_wrapper.to_string(ids) for ids in gen_ids]
-    print(f"[DEBUG] greedy_generate results: {results}")
+
     return results

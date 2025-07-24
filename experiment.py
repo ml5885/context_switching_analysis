@@ -104,7 +104,6 @@ def experiment(model_name, target, distractor, max_len, *, batch_size=8, fp16=Fa
             model_wrapper.tokenizer.encode(tok, add_special_tokens=False)
             for tok in tgt_cfg["answer_tokens"]
         ]
-        print("[DEBUG] label_tok_lists:", label_tok_lists)
         assert not all(len(x) == 1 for x in label_tok_lists), "You are in single-token mode. This will be wrong for Llama-2."
         all_single = all(len(x) == 1 for x in label_tok_lists)
         single_label_ids = [x[0] for x in label_tok_lists] if all_single else None
@@ -134,8 +133,6 @@ def experiment(model_name, target, distractor, max_len, *, batch_size=8, fp16=Fa
             prompts.append(conv)
             golds.append(gold)
 
-        print(f"[DEBUG] History len: {h}, Example prompt sample: {prompts[0]}")
-        print(f"[DEBUG] Gold answer sample: {golds[0]}")
 
         # batch loop
         for i in tqdm(range(0, n, batch_size), desc=f"{tgt_ds_name}:{h}"):
@@ -154,7 +151,6 @@ def experiment(model_name, target, distractor, max_len, *, batch_size=8, fp16=Fa
 
             if metric_acc:
                 cand_scores = _score_multitoken_labels(model_wrapper, batch_prompts, label_tok_lists)
-                print("[DEBUG] cand_scores:", cand_scores)
                 choice = cand_scores.argmax(dim=-1)
                 for j, cidx in enumerate(choice.tolist()):
                     label = tgt_cfg["labels"][cidx]
@@ -215,27 +211,6 @@ def main():
     ap.add_argument("--model", required=True)
     ap.add_argument("--target", required=True)
     ap.add_argument("--distractor", required=True)
-    ap.add_argument("--max_len", type=int, default=6)
-    ap.add_argument("--out_dir", default="results")
-    ap.add_argument("--batch_size", type=int, default=8)
-    ap.add_argument("--fp16", action="store_true")
-    ap.add_argument("--no_cosine", action="store_true")
-    args = ap.parse_args()
-
-    metrics, cosines, metric_name, dbg, debug_log = experiment(
-        args.model,
-        args.target,
-        args.distractor,
-        args.max_len,
-        batch_size=args.batch_size,
-        fp16=args.fp16,
-        no_cosine=args.no_cosine,
-    )
-    save_results(args.model, args.target, args.distractor, metric_name, metrics, cosines, dbg, args.out_dir)
-    save_debug_log(args.model, args.target, args.distractor, debug_log, args.out_dir)
-
-if __name__ == "__main__":
-    main()
     ap.add_argument("--max_len", type=int, default=6)
     ap.add_argument("--out_dir", default="results")
     ap.add_argument("--batch_size", type=int, default=8)
