@@ -146,7 +146,7 @@ def verify(debug_path):
         if ex["model_prediction"] == ex["expected_answer"]:
             res[key]["correct"] += 1
 
-    header = f"Recomputed accuracy → {debug_path}"
+    header = f"Recomputed accuracy -> {debug_path}"
     print("-" * len(header))
     print(header)
     print("-" * len(header))
