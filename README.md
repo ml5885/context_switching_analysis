@@ -5,7 +5,7 @@ This builds on existing work by [Gupta et al.](https://arxiv.org/abs/2402.18216)
 
 - Core: experiment.py, model.py, data.py
 - Visualization: viz.py (+ scratch/run_viz.sh)
-- Scripts: scripts/test.sh (local), scripts/slurm\_\*.sh (SLURM), test_debug.py (quick check)
+- Scripts: scripts/test.sh (local), test_debug.py (quick check)
 
 ## Setup
 
